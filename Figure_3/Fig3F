@@ -1,0 +1,161 @@
+# Macrophage -> Cancer ligand-receptor (LR) communication, CellChat-style
+import numpy as np, csv, os
+import matplotlib; matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+DIR = "/Users/jieli/Desktop/GSE211434"
+B   = 2000                       
+rng = np.random.default_rng(1)   
+# ---- curated lipid-transfer LR pairs: ligand (macrophage) -> receptor (cancer)
+PAIRS = [("APOE","LDLR"),("APOE","LRP1"),("APOE","LRP5"),("APOE","LRP6"),("APOE","LRP8"),
+         ("APOE","VLDLR"),("APOE","SORL1"),("APOE","SDC1"),("APOE","SCARB1"),
+         ("APOC1","LDLR"),("APOC1","LRP1"),("APOC2","LRP1"),
+         ("LPL","LRP1"),("LPL","SDC1"),("LPL","LRP8"),
+         ("PSAP","LRP1"),("PSAP","GPR37"),("PLTP","SCARB1"),("APOA1","SCARB1"),
+         ("GAS6","AXL"),("GAS6","MERTK")]
+def load_matrix():
+    meta = {r["CellID"]: r for r in csv.DictReader(open(f"{DIR}/cc_cells_meta.csv"))}
+    with open(f"{DIR}/cc_counts_matrix.tsv") as fh:
+        cells = fh.readline().rstrip("\n").split("\t")[1:]
+        genes, rows = [], []
+        for line in fh:
+            p = line.rstrip("\n").split("\t"); genes.append(p[0]); rows.append(p[1:])
+    M = np.array(rows, dtype=np.float32)
+    # collapse duplicate gene symbols by sum
+    gi = {}
+    for i, g in enumerate(genes): gi.setdefault(g, []).append(i)
+    ug = sorted(gi)
+    Mc = np.vstack([M[gi[g]].sum(0) if len(gi[g]) > 1 else M[gi[g][0]] for g in ug]).astype(np.float32)
+    gidx = {g: i for i, g in enumerate(ug)}
+    tot = Mc.sum(0); tot[tot == 0] = 1
+    CPM = Mc / tot * 1e6                      # library-size normalise each cell
+    grp  = np.array([meta[c]["group"] for c in cells])
+    isLA = np.array([meta[c]["is_LATAM"] == "1" for c in cells])
+    isM2 = np.array([meta[c]["is_M2"]    == "1" for c in cells])
+    isCa = np.array([meta[c]["is_Cancer"]== "1" for c in cells])
+    # per-cell Day from paper annotation
+    day = {}
+    with open(f"{DIR}/GSE211434_cell_types.txt") as fh:
+        hdr = fh.readline().rstrip("\n").split("\t"); ci = {h: i for i, h in enumerate(hdr)}
+        for line in fh:
+            p = line.rstrip("\n").split("\t"); day[p[ci["CellID"]]] = p[ci["Day"]]
+    dy = np.array([day.get(c, "NA") for c in cells])
+    return CPM, gidx, grp, isLA, isM2, isCa, dy, cells
+
+CPM, gidx, grp, isLA, isM2, isCa, dy, cells = load_matrix()
+pairs = [(l, r) for l, r in PAIRS if l in gidx and r in gidx]
+
+# core
+def score(Lvals, Rvals, Llab, Rlab, level):
+    """communication score = mean ligand (sender, level) x mean receptor (cancer, level)"""
+    lm = Lvals[Llab == level].mean() if (Llab == level).sum() > 0 else 0.0
+    rm = Rvals[Rlab == level].mean() if (Rlab == level).sum() > 0 else 0.0
+    return lm * rm
+def perm_test(sender_mask, cancer_mask, sender_lab, cancer_lab, levA, levB, restrict=None):
+    """
+    For each LR pair, observed score(levA)-score(levB) and permutation p.
+    restrict: optional boolean masks (s_keep, c_keep) to limit which cells are
+    permuted (used for Day0/Day180 where day-14 cells are excluded).
+    """
+    res = []
+    for l, r in pairs:
+        Ls = CPM[gidx[l]][sender_mask]; Rc = CPM[gidx[r]][cancer_mask]
+        sA = score(Ls, Rc, sender_lab, cancer_lab, levA)
+        sB = score(Ls, Rc, sender_lab, cancer_lab, levB)
+        obs = sA - sB
+        if restrict is None:
+            sl, cl, Ls2, Rc2 = sender_lab, cancer_lab, Ls, Rc
+        else:
+            skeep, ckeep = restrict
+            sl, cl = sender_lab[skeep], cancer_lab[ckeep]; Ls2, Rc2 = Ls[skeep], Rc[ckeep]
+        cnt = 0
+        for _ in range(B):
+            ps = rng.permutation(sl); pc = rng.permutation(cl)
+            d = score(Ls2, Rc2, ps, pc, levA) - score(Ls2, Rc2, ps, pc, levB)
+            if abs(d) >= abs(obs): cnt += 1
+        res.append((l, r, sA, sB, obs, (cnt + 1) / (B + 1)))
+    return res
+
+def write_csv(res, path, cols):
+    with open(path, "w") as w:
+        w.write(",".join(cols) + "\n")
+        for row in res:
+            w.write(",".join(x if isinstance(x, str) else f"{x:.6g}" for x in row) + "\n")
+
+#  pooled R vs S
+def pooled_RvsS(sender_mask, tag):
+    res = perm_test(sender_mask, isCa, grp[sender_mask], grp[isCa], "Resistant", "Sensitive")
+    write_csv(res, f"{DIR}/CC_{tag}_to_Cancer_permLR.csv",
+              ["ligand","receptor","score_Resistant","score_Sensitive","diff_R_minus_S","perm_p"])
+    return {(l, r): (sR, sS, p) for l, r, sR, sS, d, p in res}
+
+DLA = pooled_RvsS(isLA, "LATAM")
+DM2 = pooled_RvsS(isM2, "M2")
+
+def bubble_RvsS():
+    cols = [("LA-TAM","Resistant",DLA),("LA-TAM","Sensitive",DLA),
+            ("M2","Resistant",DM2),("M2","Sensitive",DM2)]
+    labels = [f"{l}→{r}" for l, r in pairs]
+    allv = [ (D[pr][0] if wh=="Resistant" else D[pr][1]) for pr in pairs for _,wh,D in cols ]
+    mx = max(allv) or 1
+    fig, ax = plt.subplots(figsize=(6.6, 8.2))
+    cc = {"Resistant":"#b2182b","Sensitive":"#2166ac"}
+    for ci,(src,wh,D) in enumerate(cols):
+        for ri,pr in enumerate(pairs):
+            sc = D[pr][0] if wh=="Resistant" else D[pr][1]
+            if sc<=0: continue
+            ax.scatter(ci, ri, s=30+(np.sqrt(sc)/np.sqrt(mx))*900, color=cc[wh],
+                       alpha=0.85, edgecolor="black", linewidth=0.4, zorder=3)
+    ax.set_xticks(range(4)); ax.set_xticklabels(["LA-TAM\nResistant","LA-TAM\nSensitive","M2\nResistant","M2\nSensitive"], fontsize=9)
+    ax.set_yticks(range(len(pairs))); ax.set_yticklabels(labels, fontsize=8.5)
+    ax.set_ylim(-0.8,len(pairs)-0.2); ax.set_xlim(-0.6,3.6); ax.invert_yaxis()
+    ax.grid(True, axis="y", ls=":", alpha=0.4, zorder=0); ax.axvline(1.5, color="gray", lw=1, ls="--")
+    for ri,pr in enumerate(pairs):
+        if DLA[pr][2]<0.05 and DLA[pr][0]>DLA[pr][1]: ax.text(3.7, ri, "  *R>S", fontsize=7, va="center", color="#b2182b")
+    ax.set_title("Macrophage → Cancer lipid-transfer communication\n(CellChat-style group permutation; dot=score) * p<0.05 (LA-TAM)",
+                 fontsize=10, fontweight="bold", pad=20)
+    plt.tight_layout(); plt.savefig(f"{DIR}/FELINE_macro_to_cancer_CellChatPerm_bubble.pdf", bbox_inches="tight"); plt.close()
+
+bubble_RvsS()
+
+# (2) longitudinal d180 vs d0 within group
+def longitudinal(sender_mask, tag):
+    out = {}
+    for group in ("Resistant","Sensitive"):
+        sm = sender_mask & (grp == group); cm = isCa & (grp == group)
+        sday = dy[sm]; cday = dy[cm]
+        skeep = np.isin(sday, ["0","180"]); ckeep = np.isin(cday, ["0","180"])
+        res = perm_test(sm, cm, sday, cday, "180", "0", restrict=(skeep, ckeep))
+        write_csv(res, f"{DIR}/CC_{tag}_to_Cancer_{group}_d180vsd0.csv",
+                  ["ligand","receptor","score_Day0","score_Day180","diff_d180_minus_d0","perm_p"])
+        out[group] = {(l,r):(s0,s180,p) for l,r,s180,s0,d,p in res}  # note: sA=Day180, sB=Day0
+    return out
+
+def bubble_longitudinal(sender_mask, tag, senderlabel):
+    D = longitudinal(sender_mask, tag)
+    labels = [f"{l}→{r}" for l,r in pairs]
+    cols = [("Resistant","0"),("Resistant","180"),("Sensitive","0"),("Sensitive","180")]
+    allv = [ (D[g][pr][0] if wh=="0" else D[g][pr][1]) for pr in pairs for g,wh in cols ]
+    mx = max(allv) or 1
+    fig, ax = plt.subplots(figsize=(6.6, 8.2)); cc = {"0":"#7fb3d5","180":"#b2182b"}
+    for ci,(g,wh) in enumerate(cols):
+        for ri,pr in enumerate(pairs):
+            sc = D[g][pr][0] if wh=="0" else D[g][pr][1]
+            if sc<=0: continue
+            ax.scatter(ci, ri, s=30+(np.sqrt(sc)/np.sqrt(mx))*900, color=cc[wh],
+                       alpha=0.85, edgecolor="black", linewidth=0.4, zorder=3)
+    ax.set_xticks(range(4)); ax.set_xticklabels(["Resistant\nDay0","Resistant\nDay180","Sensitive\nDay0","Sensitive\nDay180"], fontsize=9)
+    ax.set_yticks(range(len(pairs))); ax.set_yticklabels(labels, fontsize=8.5)
+    ax.set_ylim(-0.8,len(pairs)-0.2); ax.set_xlim(-0.6,3.6); ax.invert_yaxis()
+    ax.grid(True, axis="y", ls=":", alpha=0.4, zorder=0); ax.axvline(1.5, color="gray", lw=1, ls="--")
+    for ri,pr in enumerate(pairs):
+        if D["Resistant"][pr][2]<0.05: ax.text(1.62, ri, "R*", fontsize=7, va="center", color="#b2182b")
+        if D["Sensitive"][pr][2]<0.05: ax.text(3.62, ri, "S*", fontsize=7, va="center", color="#b2182b")
+    ax.set_title(f"{senderlabel} → Cancer lipid communication: Day180 vs Day0\n(red=Day180 blue=Day0; dot=score) R*/S* = perm p<0.05",
+                 fontsize=9.5, fontweight="bold")
+    plt.tight_layout(); plt.savefig(f"{DIR}/FELINE_{tag}_to_Cancer_d180vsd0_bubble.pdf", bbox_inches="tight"); plt.close()
+
+bubble_longitudinal(isLA, "LATAM", "LA-TAM")
+bubble_longitudinal(isM2, "M2", "M2")
+
+print("DONE. Wrote pooled + longitudinal CSVs and 3 bubble PDFs to", DIR)
