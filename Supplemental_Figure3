@@ -1,0 +1,64 @@
+##Supplemental Figure 3  |  Forest plot of hazard ratios for the cholesterol-efflux signature.
+import os, csv, math
+import numpy as np, pandas as pd, matplotlib
+matplotlib.use("Agg"); import matplotlib.pyplot as plt
+
+SCANB_CLINICAL = os.environ.get("SCANB_CLINICAL", "data/SCANB_relapse_macro_efflux.csv")
+SCANB_EXPR     = os.environ.get("SCANB_EXPR",
+                 "data/GSE96058_gene_expression_3273_samples_and_136_replicates_transformed.csv")
+OUT_DIR        = os.environ.get("OUT_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache"))
+os.makedirs(OUT_DIR, exist_ok=True)
+
+EFF = ["APOE","ABCA1","ABCG1"]
+
+def logrank(t,e,g):
+    d=pd.DataFrame({'t':t,'e':e,'g':g}).dropna();O=E=V=0.
+    for tt in np.sort(d.loc[d.e==1,'t'].unique()):
+        ar=d[d.t>=tt];n=len(ar);n1=(ar.g==1).sum();de=d[(d.t==tt)&(d.e==1)];dn=len(de);d1=(de.g==1).sum()
+        if n>1:E+=dn*n1/n;V+=dn*(n1/n)*(1-n1/n)*(n-dn)/(n-1);O+=d1
+    return (math.erfc(abs((O-E)/math.sqrt(V))/math.sqrt(2)) if V>0 else 1.0)
+def coxbin(g,t,e):
+    g=np.asarray(g,float);t=np.asarray(t,float);e=np.asarray(e,float);b=0.;H=1.
+    for _ in range(50):
+        w=np.exp(g*b);gr=0.;H=0.
+        for tt in np.unique(t[e==1]):
+            rk=t>=tt;di=(t==tt)&(e==1);dn=di.sum()
+            if dn==0:continue
+            Wr=w[rk];Zr=g[rk];sw=Wr.sum();zb=(Wr*Zr).sum()/sw
+            gr+=g[di].sum()-dn*zb;H+=dn*((Wr*Zr*Zr).sum()/sw-zb*zb)
+        if H<=0:break
+        s=gr/H;b+=s
+        if abs(s)<1e-9:break
+    se=1/math.sqrt(H) if H>0 else float('nan')
+    return math.exp(b),math.exp(b-1.96*se),math.exp(b+1.96*se)
+
+d=pd.read_csv(SCANB_CLINICAL);d=d[d.ERpos==True]
+with open(SCANB_EXPR) as fh:
+    rd=csv.reader(fh);hd=next(rd);cols=hd[1:];em={}
+    for r in rd:
+        if r[0] in EFF:em[r[0]]=[float(v) for v in r[1:]]
+E=pd.DataFrame(em,index=cols);z=(E[EFF]-E[EFF].mean())/E[EFF].std(ddof=0)
+d=d.merge(pd.DataFrame({"F":E.index,"EFF":z.mean(1).values}),on="F",how="left")
+GROUPS=[("All ER+",d),("Untreated",d[~d.endo]),("Endocrine treated",d[d.endo])]
+
+rows=[]
+for ep,(td,ee) in [("RFi",("RFi_d","RFi_e")),("DRFi",("DRFi_d","DRFi_e"))]:
+    for gname,sub in GROUPS:
+        s=sub.dropna(subset=["EFF",td,ee]);s=s[s[td]>0];hi=(s["EFF"]>s["EFF"].median()).astype(int)
+        hr,lo,up=coxbin(hi,s[td].values,s[ee].values);p=logrank(s[td].values,s[ee].values,hi.values)
+        rows.append((f"{ep} — {gname}",hr,lo,up,p,int(s[ee].sum()),len(s)))
+
+fig,ax=plt.subplots(figsize=(8.5,4.6));y=np.arange(len(rows))[::-1]
+for yy,(lab,hr,lo,up,p,ev,n) in zip(y,rows):
+    col="#c0392b" if (hr>1 and p<0.05) else "#888"
+    ax.plot([lo,up],[yy,yy],"-",color=col,lw=1.6);ax.plot(hr,yy,"s",color=col,ms=7)
+    ax.text(4.6,yy,f"HR={hr:.2f} ({lo:.2f}–{up:.2f}), p={p:.2g}  [ev={ev}/{n}]",va="center",fontsize=8)
+ax.axvline(1,ls="--",color="#999")
+ax.set_yticks(y);ax.set_yticklabels([r[0] for r in rows],fontsize=9)
+ax.set_xscale("log");ax.set_xlim(0.4,4.4);ax.set_xticks([0.5,1,2,4]);ax.set_xticklabels(["0.5","1","2","4"])
+ax.set_xlabel("Hazard ratio (efflux-high vs low, median split) — right = worse")
+ax.set_title("SCAN-B ER+: cholesterol-efflux signature (APOE/ABCA1/ABCG1) vs recurrence\nRFi & DRFi by treatment group (median split; HR high/low, log-rank P)",fontsize=10)
+plt.tight_layout()
+out=os.path.join(OUT_DIR,"SCANB_efflux_RFi_DRFi_forest.pdf")
+plt.savefig(out,bbox_inches="tight");print("saved",out)
+[print(r) for r in rows]
