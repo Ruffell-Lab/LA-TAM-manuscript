@@ -1,0 +1,73 @@
+# 3-panel TAM lipid-GSEA heatmap
+import csv, numpy as np
+import matplotlib; matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+DIR = "/Users/jieli/Desktop/GSE211434"
+CLUSTERS = ["LA-TAM","Scav-TAM","RTM-TAM","IFN-TAM","Prolif-TAM"]
+XLAB = ["LA-\nTAM","Scav-\nTAM","RTM-\nTAM","IFN-\nTAM","Prolif-\nTAM"]
+
+ORDER = ["GOBP_CHOLESTEROL_EFFLUX","GOBP_REVERSE_CHOLESTEROL_TRANSPORT","GOBP_PHOSPHOLIPID_EFFLUX",
+ "GOBP_LIPID_EXPORT_FROM_CELL","GOBP_HIGH_DENSITY_LIPOPROTEIN_PARTICLE_ASSEMBLY",
+ "GOBP_HIGH_DENSITY_LIPOPROTEIN_PARTICLE_REMODELING","REACTOME_PLASMA_LIPOPROTEIN_ASSEMBLY_REMODELING_AND_CLEARANCE",
+ "REACTOME_PLASMA_LIPOPROTEIN_CLEARANCE","GOBP_STEROL_TRANSPORT","GOBP_POSITIVE_REGULATION_OF_LIPID_TRANSPORT",
+ "GOBP_LIPID_LOCALIZATION","HALLMARK_CHOLESTEROL_HOMEOSTASIS","GOBP_STEROL_HOMEOSTASIS",
+ "REACTOME_CHOLESTEROL_BIOSYNTHESIS","HALLMARK_FATTY_ACID_METABOLISM","GOBP_FATTY_ACID_BETA_OXIDATION",
+ "GOBP_LIPID_CATABOLIC_PROCESS","GOBP_TRIGLYCERIDE_METABOLIC_PROCESS","HALLMARK_ADIPOGENESIS","HALLMARK_BILE_ACID_METABOLISM"]
+
+def pp(x):
+    for pre in ("HALLMARK_","GOBP_","REACTOME_"):
+        if x.startswith(pre):
+            r = x[len(pre):].replace("_"," ").title()
+            r = (r.replace("Fatty Acid Beta Oxidation","FA Beta-Oxidation")
+                   .replace("High Density Lipoprotein Particle","HDL Particle")
+                   .replace("Plasma Lipoprotein Assembly Remodeling And Clearance","Plasma Lipoprot Assembly/Remodel/Clear"))
+            return pre + r
+    return x
+
+def f(x):
+    try: return float(x)
+    except: return np.nan
+
+def load(fn):
+    rows = [r for r in csv.DictReader(open(f"{DIR}/{fn}"))]
+    for r in rows: r["NES"] = f(r["NES"])
+    return rows
+
+long_d180vsd0 = load("FELINE_tam5_d180vsd0_GSEA.csv")   
+rvs           = load("FELINE_tam5_d180_RvsS_GSEA.csv")  
+
+paths = ORDER   # fixed order/rows
+
+def matrix(rows, contrast_of, group=None):
+    M = np.full((len(paths), len(CLUSTERS)), np.nan)
+    pi = {p:i for i,p in enumerate(paths)}
+    want = {contrast_of(c): j for j,c in enumerate(CLUSTERS)}
+    for r in rows:
+        if group is not None and r.get("group") != group: continue
+        if r["pathway"] in pi and r["contrast"] in want:
+            M[pi[r["pathway"]], want[r["contrast"]]] = r["NES"]
+    return M
+
+panels = [
+    ("Resistance vs Sensitive\nAt Day0", matrix(rvs, lambda c:f"{c} R-vs-S @Day0")),
+    ("Resistance vs Sensitive\nAt Day180", matrix(rvs, lambda c:f"{c} R-vs-S @Day180")),
+]
+
+fig, axes = plt.subplots(1, 3, figsize=(11.5, 7.4), gridspec_kw={"wspace":0.08})
+for k,(title, M) in enumerate(panels):
+    ax = axes[k]
+    im = ax.imshow(M, cmap="RdBu_r", vmin=-1.5, vmax=1.5, aspect="auto")
+    ax.set_xticks(range(5)); ax.set_xticklabels(XLAB, fontsize=8)
+    ax.set_yticks(range(len(paths)))
+    if k == 0: ax.set_yticklabels([pp(p) for p in paths], fontsize=8, family="DejaVu Sans")
+    else:      ax.set_yticklabels([])
+    ax.set_title(title, fontsize=10)
+    for i in range(len(paths)):
+        for j in range(5):
+            if not np.isnan(M[i,j]):
+                ax.text(j, i, f"{M[i,j]:.2f}", ha="center", va="center", fontsize=6.5,
+                        color="white" if abs(M[i,j])>1.0 else "black")
+fig.text(0.06, 1.0, "F", fontsize=16, fontweight="bold", va="top")
+plt.savefig(f"{DIR}/FELINE_tam5_lipid_GSEA.pdf", bbox_inches="tight"); plt.close()
+print("DONE -> FELINE_tam5_lipid_GSEA.pdf")
