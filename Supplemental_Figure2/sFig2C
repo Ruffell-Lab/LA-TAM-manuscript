@@ -1,0 +1,56 @@
+import os, numpy as np, pandas as pd, matplotlib
+matplotlib.use("Agg"); import matplotlib.pyplot as plt
+HERE = os.path.dirname(os.path.abspath(__file__)); D = os.path.join(HERE, "umap_local_data")
+X = pd.read_csv(os.path.join(D, "myeloid_expr.csv.gz"))                
+lab = pd.read_csv(os.path.join(D, "feline_FROZEN_labels.csv"))        
+meta = pd.read_csv(os.path.join(D, "myeloid_meta.csv"))                
+assert len(X) == len(lab) == len(meta)
+pop = lab["myeloid"].values
+grp = pd.Series(meta["response"]).map(lambda v: "Resistant" if str(v).startswith("Non") else "Sensitive").values
+ORDER = ["Macrophage", "Monocyte", "cDC2", "cDC1", "mregDC"]
+COL = {"Macrophage": "#c0392b", "Monocyte": "#e0a030", "cDC2": "#2c6fbb", "cDC1": "#2ca02c", "mregDC": "#9467bd"}
+
+# composition stacked bar
+fig, ax = plt.subplots(figsize=(4.2, 5))
+for xi, g in enumerate(["Sensitive", "Resistant"]):
+    sub = pop[grp == g]; n = len(sub); b = 0
+    for c in ORDER:
+        v = (sub == c).mean(); ax.bar(xi, v, bottom=b, width=0.7, color=COL[c], edgecolor="white", lw=.5)
+        if v >= 0.03: ax.text(xi, b + v / 2, f"{c}\n{v*100:.0f}%", ha="center", va="center",
+                              fontsize=7, color="white" if c == "Macrophage" else "black")
+        b += v
+ax.set_xticks([0, 1]); ax.set_xticklabels([f"Sensitive\n(n={(grp=='Sensitive').sum()})", f"Resistant\n(n={(grp=='Resistant').sum()})"])
+ax.set_ylabel("fraction of myeloid cells"); ax.set_ylim(0, 1)
+ax.set_title("FELINE Arm A — myeloid population\n(frozen labels)", fontsize=10, fontweight="bold")
+ax.legend(handles=[plt.Rectangle((0, 0), 1, 1, color=COL[c]) for c in ORDER], labels=ORDER,
+          fontsize=8, bbox_to_anchor=(1.02, 1), loc="upper left", frameon=False)
+plt.tight_layout(); out1 = os.path.join(HERE, "FELINE_myeloid_POPULATION_composition_FROZEN.pdf")
+fig.savefig(out1, bbox_inches="tight"); print("Saved", out1)
+
+# marker dot plot
+MARK = ["CD68","C1QA","C1QB","APOE","MRC1","CD163","MSR1","LYZ","FCN1","VCAN","S100A8","S100A9","CD14",
+        "LST1","CD1C","CLEC10A","FCER1A","CLEC9A","XCR1","LAMP3","CCR7","FSCN1"]
+MARK = [g for g in MARK if g in X.columns]
+pct = pd.DataFrame({g: [ (X.loc[pop == c, g].values > 0).mean() for c in ORDER ] for g in MARK}, index=ORDER)
+mean = pd.DataFrame({g: [ X.loc[pop == c, g].mean() for c in ORDER ] for g in MARK}, index=ORDER)
+z = (mean - mean.mean(0)) / (mean.std(0) + 1e-9)           
+fig, ax = plt.subplots(figsize=(11, 3.4))
+for yi, c in enumerate(ORDER):
+    for xi, g in enumerate(MARK):
+        ax.scatter(xi, yi, s=pct.loc[c, g] * 240 + 4, c=[z.loc[c, g]], cmap="Reds", vmin=-0.5, vmax=2.0,
+                   edgecolors="none")
+ax.set_xticks(range(len(MARK))); ax.set_xticklabels(MARK, rotation=90, fontsize=8)
+ax.set_yticks(range(len(ORDER))); ax.set_yticklabels(ORDER, fontsize=9)
+ax.set_xlim(-.6, len(MARK) - .4); ax.set_ylim(-.6, len(ORDER) - .4); ax.invert_yaxis()
+import matplotlib.cm as cm; from matplotlib.colors import Normalize
+sm = cm.ScalarMappable(cmap="Reds", norm=Normalize(-0.5, 2.0)); sm.set_array([])
+cb = fig.colorbar(sm, ax=ax, fraction=0.02, pad=0.01); cb.set_label("mean expr (z)", fontsize=8)
+for s, lbl in [(.25, "25%"), (.5, "50%"), (1.0, "100%")]:
+    ax.scatter([], [], s=s * 240 + 4, c="grey", label=lbl)
+ax.legend(title="% expr", fontsize=7, title_fontsize=7, bbox_to_anchor=(1.06, 1), loc="upper left", frameon=False)
+ax.set_title("FELINE Arm A — myeloid population markers (frozen labels)", fontsize=10, fontweight="bold")
+plt.tight_layout(); out2 = os.path.join(HERE, "FELINE_myeloid_POPULATION_dotplot_FROZEN.pdf")
+fig.savefig(out2, bbox_inches="tight"); print("Saved", out2)
+
+print("\ncomposition (% of myeloid):")
+print(pd.DataFrame({g: [ (pop[grp==g]==c).mean()*100 for c in ORDER ] for g in ["Sensitive","Resistant"]}, index=ORDER).round(1).to_string())
