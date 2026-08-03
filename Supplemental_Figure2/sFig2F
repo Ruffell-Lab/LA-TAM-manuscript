@@ -1,0 +1,43 @@
+# GSE240112 (tamoxifen-resistant scRNA)
+suppressPackageStartupMessages({library(data.table); library(DESeq2); library(fgsea); library(msigdbr); library(ggplot2)})
+DIR <- "/Users/jieli/Desktop/GSE240112"
+
+pb  <- as.data.frame(fread(file.path(DIR,"g240_epi_pseudobulk.csv")))
+rownames(pb) <- make.unique(pb$gene); pb$gene <- NULL
+grp <- read.csv(file.path(DIR,"g240_group.csv"), row.names=1)        # sample -> group (NT/PT/RT)
+use <- rownames(grp)[grp$group %in% c("PT","RT")]                    # RT vs PT (drop NT)
+pb  <- pb[, use]; cd <- data.frame(group=factor(grp[use,"group"], levels=c("PT","RT")), row.names=use)
+
+keep <- rowSums(pb>=10) >= 3
+dds  <- DESeqDataSetFromMatrix(round(as.matrix(pb[keep,])), cd, ~group); dds <- DESeq(dds)
+res  <- as.data.frame(results(dds, contrast=c("group","RT","PT"))); res$gene <- rownames(res)
+write.csv(res, file.path(DIR,"GSE240112_cancer_DE_RTvsPT.csv"))
+ranks <- sort(setNames(res$stat,res$gene)[is.finite(res$stat)], decreasing=TRUE)
+
+H  <- msigdbr(species="Homo sapiens", category="H")
+GO <- msigdbr(species="Homo sapiens", category="C5", subcategory="GO:BP")
+R  <- msigdbr(species="Homo sapiens", category="C2", subcategory="CP:REACTOME")
+focus_H <- c("HALLMARK_CHOLESTEROL_HOMEOSTASIS","HALLMARK_FATTY_ACID_METABOLISM",
+             "HALLMARK_ESTROGEN_RESPONSE_EARLY","HALLMARK_ESTROGEN_RESPONSE_LATE",
+             "HALLMARK_MTORC1_SIGNALING","HALLMARK_ADIPOGENESIS","HALLMARK_BILE_ACID_METABOLISM")
+GOt <- unique(GO$gs_name[grepl("CHOLESTEROL|STEROL|_LIPID|FATTY_ACID|ESTROGEN|STEROID|MEVALONATE", GO$gs_name)])
+Rt  <- unique(R$gs_name[grepl("CHOLESTEROL|STEROL|MEVALONATE", R$gs_name)])
+pw  <- c(split(H$gene_symbol,H$gs_name)[focus_H], split(GO$gene_symbol,GO$gs_name)[GOt], split(R$gene_symbol,R$gs_name)[Rt])
+pw  <- pw[!sapply(pw,is.null)]
+set.seed(1); fg <- fgsea(pw, ranks, minSize=5, maxSize=500)[order(padj)]
+fwrite(fg[,.(pathway,NES,pval,padj,size)], file.path(DIR,"GSE240112_cancer_GSEA_results.csv"))
+print(head(fg[,.(pathway,NES,pval,padj)], 25))
+
+sub <- fg[pathway %in% c(focus_H, head(GOt,15), Rt)][order(NES)]
+pdf(file.path(DIR,"GSE240112_cancer_GSEA.pdf"), width=10, height=8)
+print(ggplot(sub, aes(NES, reorder(pathway,NES), fill=padj<0.1)) + geom_col() + geom_vline(xintercept=0) +
+  scale_fill_manual(values=c("grey70","#c0392b"), name="padj<0.1") +
+  labs(x="NES (+ = up in RT / tamoxifen-resistant)", y="",
+       title="GSE240112 cancer cells: lipid & ER GSEA (RT vs PT)") + theme_bw())
+dev.off()
+# leading-edge plot for cholesterol homeostasis
+pdf(file.path(DIR,"GSE240112_cholesterol_enrichment.pdf"), width=7, height=4)
+print(plotEnrichment(pw[["HALLMARK_CHOLESTEROL_HOMEOSTASIS"]], ranks) +
+      labs(title="HALLMARK_CHOLESTEROL_HOMEOSTASIS (RT vs PT)"))
+dev.off()
+cat("done -> GSE240112_cancer_GSEA_results.csv + .pdf in", DIR, "\n")
