@@ -1,0 +1,58 @@
+"""
+Figure 4G  |  SCAN-B ER+ overall survival by macrophage lipid-efflux signature.
+"""
+import os, csv, math
+import numpy as np, pandas as pd, matplotlib
+matplotlib.use("Agg"); import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
+SCANB_CLINICAL = os.environ.get("SCANB_CLINICAL", "data/SCANB_relapse_macro_efflux.csv")
+SCANB_EXPR     = os.environ.get("SCANB_EXPR",
+                 "data/GSE96058_gene_expression_3273_samples_and_136_replicates_transformed.csv")
+OUT_DIR        = os.environ.get("OUT_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache"))
+os.makedirs(OUT_DIR, exist_ok=True)
+
+LAM = ["ABCA1","ABCG1","NR1H3","NR1H2","APOE","APOC1","PLTP","SOAT1","NCEH1","LIPA","NPC2",
+       "TREM2","GPNMB","SPP1","FABP5","LPL","CD9","LGALS3","PLIN2","CD36","MSR1","MARCO","OLR1"]
+def logrank(t,e,g):
+    d=pd.DataFrame({'t':t,'e':e,'g':g}).dropna();O=E=V=0.
+    for tt in np.sort(d.loc[d.e==1,'t'].unique()):
+        ar=d[d.t>=tt];n=len(ar);n1=(ar.g==1).sum();de=d[(d.t==tt)&(d.e==1)];dn=len(de);d1=(de.g==1).sum()
+        if n>1:E+=dn*n1/n;V+=dn*(n1/n)*(1-n1/n)*(n-dn)/(n-1);O+=d1
+    return (math.erfc(abs((O-E)/math.sqrt(V))/math.sqrt(2)) if V>0 else 1.0)
+def km(t,e):
+    d=pd.DataFrame({'t':t,'e':e}).dropna().sort_values('t');ts=[0];sv=[1.];c=1
+    for tt in np.sort(d.loc[d.e==1,'t'].unique()):
+        n=(d.t>=tt).sum();dd=((d.t==tt)&(d.e==1)).sum();c*=(1-dd/n);ts.append(tt/365.25);sv.append(c)
+    return ts,sv
+
+d=pd.read_csv(SCANB_CLINICAL);d=d[d.ERpos==True]
+need=set(LAM)|set(EFF)
+with open(SCANB_EXPR) as fh:
+    rd=csv.reader(fh);hd=next(rd);cols=hd[1:];em={}
+    for r in rd:
+        if r[0] in need:em[r[0]]=[float(v) for v in r[1:]]
+E=pd.DataFrame(em,index=cols)
+def sz(genes):
+    g=[x for x in genes if x in E.columns];z=(E[g]-E[g].mean())/E[g].std(ddof=0);return z.mean(1)
+E2=pd.DataFrame({"F":E.index});E2["LAM"]=sz(LAM).values;E2["EFF"]=sz(EFF).values
+d=d.merge(E2,on="F",how="left")
+GROUPS=[("All ER+",d),("Untreated",d[~d.endo]),("Endocrine treated",d[d.endo])]
+def page(pdf,sigcol,signame):
+    fig,axs=plt.subplots(1,3,figsize=(14,4.4))
+    for ax,(gname,sub) in zip(axs,GROUPS):
+        s=sub.dropna(subset=[sigcol,"OS_d","OS_e"]);s=s[s.OS_d>0]
+        hi=(s[sigcol]>s[sigcol].median()).astype(int);p=logrank(s.OS_d.values,s.OS_e.values,hi.values)
+        for h,c,nm in [(1,"#c0392b","High"),(0,"#3366cc","Low")]:
+            g=s[hi==h];ts,sv=km(g.OS_d.values,g.OS_e.values);ax.step(ts,sv,where="post",color=c,lw=1.6,label=f"{nm} (n={len(g)})")
+        ax.set_ylim(0.5,1.005);ax.set_xlabel("Years");ax.set_title(f"SCAN-B ER+ {gname}\nlog-rank p={p:.2g}",fontsize=10)
+        ax.legend(title=signame,fontsize=8,loc="lower left",frameon=False)
+    axs[0].set_ylabel("Survival (OS)")
+    fig.suptitle(f"SCAN-B ER+ overall survival by {signame} (median split)",fontweight="bold",fontsize=12,y=1.02)
+    plt.tight_layout();pdf.savefig(fig,bbox_inches="tight");plt.close(fig)
+
+out=os.path.join(OUT_DIR,"SCANB_efflux_LAM_OS_3groups_KM.pdf")
+with PdfPages(out) as pdf:
+    page(pdf,"LAM","LAM/lipid-efflux signature (23 genes)")   
+print("saved",out)
+print("group n:", [(g,len(s)) for g,s in GROUPS])
