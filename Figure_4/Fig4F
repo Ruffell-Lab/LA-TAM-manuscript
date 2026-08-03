@@ -1,0 +1,18 @@
+## per-patient slopegraph
+source("_helpers.R")
+df <- classify_neighbors(subset(load_data(), timepoint == "S1"), "LAM")
+T  <- subset(df, dominant == "tumor" & cat %in% c("OTHER","EFFLUX"))
+res <- patient_effect(T); w <- res$w
+long <- data.frame(patient = rep(w$patient, 2),
+                   grp = factor(rep(c("OTHER","EFFLUX"), each = nrow(w)), levels = c("OTHER","EFFLUX")),
+                   val = c(w$ER_z.OTHER, w$ER_z.EFFLUX))
+p <- ggplot(long, aes(grp, val, group = patient)) +
+  geom_line(colour = "#c0392b", alpha = .6) + geom_point(colour = "#c0392b") +
+  stat_summary(aes(group = 1), fun = mean, geom = "line", linewidth = 2, colour = "black") +
+  geom_hline(yintercept = 0, linetype = 3, colour = "grey50") +
+  labs(x = c("next to\nOTHER macrophage", "next to\nEFFLUX macrophage")[1], y = "tumour ER (z), per-patient mean",
+       title = sprintf("[PRE] biological split (LAM>0)   paired t p=%.3f", res$p_t)) +
+  scale_x_discrete(labels = c("next to\nOTHER\nmacrophage", "next to\nEFFLUX\nmacrophage")) +
+  theme_classic(base_size = 12)
+ggsave("out/17_slopegraph_BIOLOGICAL_PRE.pdf", p, width = 4, height = 5.2)
+print(res[c("delta","up","p_t","p_perm")])
