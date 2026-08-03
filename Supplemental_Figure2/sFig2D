@@ -1,0 +1,68 @@
+# TAM 5-cluster IDENTITY heatmap 
+import csv, numpy as np
+import matplotlib; matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+DIR = "/Users/jieli/Desktop/GSE211434"
+CLUSTERS = ["LA-TAM","Scav-TAM","RTM-TAM","IFN-TAM","Prolif-TAM"]
+
+# fixed a-priori canonical panel (rows grouped by the cluster they mark)
+BLOCKS = [
+ ("LA-TAM", ["GOBP_CHOLESTEROL_EFFLUX","GOBP_LONG_CHAIN_FATTY_ACID_TRANSPORT","GOBP_CHOLESTEROL_STORAGE",
+             "GOBP_REGULATION_OF_PLASMA_LIPOPROTEIN_PARTICLE_LEVELS","GOBP_CELLULAR_RESPONSE_TO_LIPOPROTEIN_PARTICLE_STIMULUS",
+             "GOBP_STEROL_TRANSPORT","GOBP_STEROL_HOMEOSTASIS","GOBP_POSITIVE_REGULATION_OF_LIPID_TRANSPORT"]),
+ ("Scav-TAM", ["HALLMARK_TGF_BETA_SIGNALING","GOMF_MHC_CLASS_II_PROTEIN_COMPLEX_BINDING","HALLMARK_APICAL_SURFACE",
+               "GOMF_RECEPTOR_SERINE_THREONINE_KINASE_BINDING"]),
+ ("RTM-TAM", ["GOBP_COLLAGEN_FIBRIL_ORGANIZATION","GOBP_BLOOD_COAGULATION_FIBRIN_CLOT_FORMATION","GOBP_WOUND_HEALING",
+              "GOMF_EXTRACELLULAR_MATRIX_STRUCTURAL_CONSTITUENT_CONFERRING_TENSILE_STRENGTH","GOBP_COLLAGEN_METABOLIC_PROCESS"]),
+ ("IFN-TAM", ["GOBP_RESPONSE_TO_TYPE_I_INTERFERON","HALLMARK_INTERFERON_GAMMA_RESPONSE","GOBP_ANTIGEN_PROCESSING_AND_PRESENTATION",
+              "GOBP_ANTIVIRAL_INNATE_IMMUNE_RESPONSE","GOMF_CXCR_CHEMOKINE_RECEPTOR_BINDING"]),
+ ("Prolif-TAM", ["GOBP_DNA_REPLICATION","GOBP_CHROMOSOME_SEGREGATION","GOBP_MITOTIC_SISTER_CHROMATID_SEGREGATION",
+                 "HALLMARK_E2F_TARGETS","HALLMARK_G2M_CHECKPOINT"]),
+]
+
+def relabel(x):
+    x = x.replace("GOMF_EXTRACELLULAR_MATRIX_STRUCTURAL_CONSTITUENT_CONFERRING_TENSILE_STRENGTH",
+                  "GOMF_ECM_STRUCTURAL_CONSTITUENT")
+    for pre in ("HALLMARK_","GOBP_","GOMF_"):
+        if x.startswith(pre): return pre[:-1]+"_"+x[len(pre):].replace("_"," ").title()
+    return x
+
+# load NES from both CSVs
+NES = {}
+for fn in ("FELINE_tam5_GO_full_identity.csv","FELINE_tam5_identity_GSEA.csv"):
+    try:
+        for r in csv.DictReader(open(f"{DIR}/{fn}")):
+            try: NES[(r["cluster"], r["pathway"])] = float(r["NES"])
+            except: pass
+    except FileNotFoundError:
+        print("missing", fn)
+
+paths = [p for _, ps in BLOCKS for p in ps]
+M = np.full((len(paths), 5), np.nan)
+for i, p in enumerate(paths):
+    for j, c in enumerate(CLUSTERS):
+        if (c, p) in NES: M[i, j] = NES[(c, p)]
+miss = [p for p in paths if np.all(np.isnan(M[[paths.index(p)]]))]
+if miss: print("NOTE not found:", miss)
+
+# plot (identical palette/scale to the other figures)
+VLIM = 3   # NES range spans ~ -2.4 .. +3.2, so scale to +/-3 (not +/-2)
+fig, ax = plt.subplots(figsize=(7.6, 9.0))
+im = ax.imshow(M, cmap="RdBu_r", vmin=-VLIM, vmax=VLIM, aspect="auto")
+ax.set_xticks(range(5)); ax.set_xticklabels(CLUSTERS, rotation=45, ha="right", fontsize=10)
+ax.set_yticks(range(len(paths))); ax.set_yticklabels([relabel(p) for p in paths], fontsize=8)
+for i in range(len(paths)):
+    for j in range(5):
+        if not np.isnan(M[i, j]):
+            ax.text(j, i, f"{M[i,j]:.1f}", ha="center", va="center", fontsize=7,
+                    color="white" if abs(M[i, j]) > 2.0 else "black")
+# block separators
+row = 0
+for _, ps in BLOCKS[:-1]:
+    row += len(ps); ax.axhline(row-0.5, color="black", lw=1.1)
+ax.set_title("TAM subsets — identity GSEA (cluster vs rest)\ncanonical GO/Hallmark programs", fontsize=11, fontweight="bold")
+cb = fig.colorbar(im, ax=ax, shrink=0.45, ticks=[-3,-2,-1,0,1,2,3]); cb.set_label("NES")
+plt.tight_layout()
+plt.savefig(f"{DIR}/FELINE_tam5_identity_canonical_heatmap.pdf", bbox_inches="tight"); plt.close()
+print("DONE -> FELINE_tam5_identity_canonical_heatmap.pdf")
