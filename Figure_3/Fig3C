@@ -1,0 +1,72 @@
+import numpy as np, pandas as pd, matplotlib
+matplotlib.use("Agg"); import matplotlib.pyplot as plt
+np.random.seed(0)
+G="/sessions/fervent-gracious-bardeen/mnt/GSE211434"; OUT="/sessions/fervent-gracious-bardeen/mnt/outputs"
+DST="/sessions/fervent-gracious-bardeen/mnt/Macrophage with ER/FELINE_GSE211434_resistance_singlecell"
+hdr=open(f"{OUT}/g211_header.txt").readline().rstrip("\n").split("\t"); cellids=np.array(hdr[3:])
+ct=pd.read_csv(f"{G}/GSE211434_cell_types.txt",sep="\t",low_memory=False).set_index("CellID").reindex(cellids)
+celltype=ct["CellType"].values; ncount=pd.to_numeric(ct["nCount_RNA"],errors="coerce").values.astype(float)
+panel=[];prow=[]
+for line in open(f"{OUT}/g211_mac_panel.txt"):
+    f=line.rstrip("\n").split("\t");panel.append(f[2]);prow.append(np.array(f[3:],dtype=np.float32))
+Pn=np.vstack(prow);gi={g:i for i,g in enumerate(panel)}
+mac=np.where(celltype=="Macrophages")[0]
+X=np.log1p(Pn[:,mac]/ncount[mac]*1e4);Xz=((X.T-X.mean(1))/(X.std(1)+1e-9))
+U,S,Vt=np.linalg.svd(Xz-Xz.mean(0),full_matrices=False);PC=U[:,:15]*S[:15]
+def km(Xp,k,it=60):
+    n=len(Xp);c=[Xp[np.random.randint(n)]]
+    for _ in range(k-1):
+        d=np.min([((Xp-ci)**2).sum(1) for ci in c],0);p=d/d.sum();c.append(Xp[np.random.choice(n,p=p)])
+    C=np.array(c)
+    for _ in range(it):
+        lab=np.argmin(((Xp[:,None]-C[None])**2).sum(2),1)
+        nC=np.array([Xp[lab==j].mean(0) if (lab==j).any() else C[j] for j in range(k)])
+        if np.allclose(nC,C):break
+        C=nC
+    return lab
+lab=km(PC,12)
+def hi(cl,gs): return Xz[lab==cl][:,[gi[g] for g in gs if g in gi]].mean()
+defs={"Chol-LAM":["APOE","ABCA1","NR1H3","APOC1","GPNMB"],"Lipid-LAM":["FABP5","FABP4","LPL","LIPA","PLIN2"],
+ "Scav-TAM":["MSR1","CD9","MERTK","LGALS3","TREM2"],"M2-TAM":["MRC1","CD163","SELENOP","F13A1"],
+ "M1-TAM":["CXCL9","CXCL10","CXCL11","IL1B"],"Inflam-mono":["S100A8","S100A9","EREG","VCAN"],
+ "Mono/cDC2":["FCN1","LST1","CD1C","CLEC10A"],"cDC1":["CLEC9A","XCR1"],"Activated-DC":["LAMP3","CCR7","FSCN1"],
+ "IFN-TAM":["ISG15","IFIT1","IFIT3","MX1"],"Proliferating":["MKI67","TOP2A","STMN1"],"Complement-TAM":["C1QA","C1QB","C1QC"]}
+clname={cl:max(defs,key=lambda k:hi(cl,defs[k])) for cl in range(12)}
+merge={"Complement-TAM":"M2-TAM","Inflam-mono":"Mono/cDC2","M1-TAM":"IFN-TAM"}
+sub=np.array([merge.get(clname[l],clname[l]) for l in lab])
+relab={"Chol-LAM":"LA-TAM","Lipid-LAM":"LA-TAM","M2-TAM":"RTM-TAM","Proliferating":"Prolif-TAM","Activated-DC":"mregDC"}
+sub=np.array([relab.get(s,s) for s in sub])
+mono_g=["FCN1","VCAN","S100A8","S100A9","CD14","LST1"]; cdc2_g=["CD1C","CLEC10A","FCER1A"]
+ms=Xz[:,[gi[g] for g in mono_g if g in gi]].mean(1); cs=Xz[:,[gi[g] for g in cdc2_g if g in gi]].mean(1)
+sub=np.where(sub=="Mono/cDC2", np.where(ms>=cs,"Monocyte","cDC2"), sub)
+
+order=["LA-TAM","Scav-TAM","RTM-TAM","IFN-TAM","Prolif-TAM"]   # macrophage subtypes only (DC + Monocyte removed)
+order=[o for o in order if (sub==o).any()]
+markers=[("LA-TAM",["APOE","ABCA1","NR1H3","GPNMB","TREM2","FABP5","LPL"]),
+         ("Scav-TAM",["MSR1","MARCO","MERTK","CD9","LGALS3"]),
+         ("RTM-TAM",["MRC1","CD163","SELENOP","F13A1","FOLR2","LYVE1"]),
+         ("IFN-TAM",["ISG15","IFIT1","IFIT3","MX1","CXCL9","CXCL10"]),
+         ("Prolif-TAM",["MKI67","TOP2A","STMN1"])]
+showg=[g for _,gs in markers for g in gs if g in gi]
+Xln=X.T
+popmean=np.vstack([Xln[sub==c][:,[gi[g] for g in showg]].mean(0) for c in order])
+popz=(popmean-popmean.mean(0))/(popmean.std(0)+1e-9)
+fig,ax=plt.subplots(figsize=(10,3.2))
+xs=[];ys=[];sz=[];cz=[]
+for yi,c in enumerate(order):
+    cells=sub==c
+    for j,g in enumerate(showg):
+        pe=(Pn[gi[g],mac][cells]>0).mean(); xs.append(j); ys.append(len(order)-1-yi); sz.append(pe*200); cz.append(popz[yi,j])
+sc=ax.scatter(xs,ys,s=sz,c=cz,cmap="Reds",vmin=-0.5,vmax=2.0,edgecolor="grey",linewidth=.3)
+ax.set_xticks(range(len(showg))); ax.set_xticklabels(showg,rotation=90,fontsize=7.5)
+ax.set_yticks(range(len(order))); ax.set_yticklabels(order[::-1],fontsize=9)
+b=0
+for _,gs in markers[:-1]:
+    b+=len([g for g in gs if g in gi]); ax.axvline(b-0.5,color="#ccc",lw=.7)
+ax.set_title("FELINE myeloid SUBTYPE annotation markers (size = % expressing, color = z across subtypes)")
+plt.colorbar(sc,ax=ax,fraction=.02,pad=.01,label="mean expr (z across subtypes)")
+for pe,lx in [(0.25,"25%"),(0.5,"50%"),(1.0,"100%")]: ax.scatter([],[],s=pe*200,c="grey",label=lx)
+ax.legend(title="% expr",fontsize=7.5,loc="center left",bbox_to_anchor=(1.07,0.5),labelspacing=1.2,borderpad=.8)
+ax.set_xlim(-1,len(showg)); ax.set_ylim(-0.7,len(order)-0.3)
+plt.tight_layout(); plt.savefig(f"{DST}/FELINE_myeloid_SUBTYPE_markers_bubble.pdf",bbox_inches="tight")
+print("saved | subtypes:",{c:int((sub==c).sum()) for c in order})
