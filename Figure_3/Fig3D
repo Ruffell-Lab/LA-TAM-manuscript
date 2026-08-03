@@ -1,0 +1,48 @@
+# feline_tam5_composition_by day
+import csv, collections, numpy as np
+import matplotlib; matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+DIR = "/Users/jieli/Desktop/GSE211434"
+LAB = "/Users/jieli/Claude/Projects/Macrophage with ER/FELINE_GSE211434_resistance_singlecell/umap_local_data/feline_FROZEN_5TAM_paperMac.csv"
+RESP = {"Non-response":"Resistant","Response":"Sensitive"}
+DAYS = ["0","14","180"]
+# stack order bottom->top; legend colours as in panel D
+STACK = ["LA-TAM","Scav-TAM","RTM-TAM","IFN-TAM","Prolif-TAM"]
+COL = {"LA-TAM":"#1f77b4","Scav-TAM":"#ff7f0e","RTM-TAM":"#5cb85c",
+       "IFN-TAM":"#c0392b","Prolif-TAM":"#9467bd"}
+tam = {r["CellID"]: r["tam"] for r in csv.DictReader(open(LAB)) if r.get("tam")}
+# per-patient counts: cnt[(patient,day)][tam], tot[(patient,day)]
+cnt = collections.defaultdict(collections.Counter); tot = collections.Counter(); pinfo = {}
+with open(f"{DIR}/GSE211434_cell_types.txt") as fh:
+    h = fh.readline().rstrip("\n").split("\t"); ci = {x:i for i,x in enumerate(h)}
+    for line in fh:
+        p = line.rstrip("\n").split("\t")
+        if p[ci["TreatmentArm"]] != "A": continue
+        cid = p[ci["CellID"]]
+        if cid not in tam: continue
+        g = RESP.get(p[ci["ResponseYN"]]); d = p[ci["Day"]]; pt = p[ci["Patient"]]
+        if g is None: continue
+        cnt[(pt,d)][tam[cid]] += 1; tot[(pt,d)] += 1; pinfo[pt] = g
+def frac(g, d, c):
+    vals = [cnt[(pt,d)][c] / tot[(pt,d)] for pt in pinfo if pinfo[pt]==g and tot[(pt,d)]>0]
+    return np.mean(vals) if vals else 0.0
+
+npat = {"Sensitive":4, "Resistant":7}
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.6), sharey=True)
+for ax, g in zip(axes, ["Sensitive","Resistant"]):
+    for xi, d in enumerate(DAYS):
+        bottom = 0.0
+        for c in STACK:
+            v = frac(g, d, c)
+            ax.bar(xi, v, bottom=bottom, color=COL[c], width=0.72, edgecolor="white", lw=0.5)
+            bottom += v
+    ax.set_xticks(range(3)); ax.set_xticklabels([f"Day{d}" for d in DAYS])
+    ax.set_ylim(0, 1.0); ax.set_xlabel(f"{g}\n(n={npat[g]})")
+    for s in ("top","right"): ax.spines[s].set_visible(False)
+axes[0].set_ylabel("Fraction of Macrophages")
+leg = ["IFN-TAM","RTM-TAM","LA-TAM","Scav-TAM","Prolif-TAM"]
+handles = [plt.Rectangle((0,0),1,1,color=COL[c]) for c in leg]
+fig.legend(handles, leg, loc="center left", bbox_to_anchor=(0.92, 0.5), frameon=False, fontsize=9)
+plt.tight_layout(rect=[0,0,0.9,1])
+plt.savefig(f"{DIR}/FELINE_tam5_composition_byday_RECON.pdf", bbox_inches="tight"); plt.close()
+print("DONE -> FELINE_tam5_composition_byday_RECON.pdf")
