@@ -1,0 +1,104 @@
+import numpy as np, pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
+from matplotlib.patches import Rectangle, ConnectionPatch
+from matplotlib.lines import Line2D
+
+# configuration
+DATA   = "data/gse289326_rebuilt.csv"
+OUT    = "out/Fig4D_spatial_map.pdf"
+PANELS = [                                   # section + square zoom window (row0, col0, size)
+    dict(sample="P5-S2", label="Patient P5", tags=("A", "B"), box=(29, 37, 24)),
+    dict(sample="P3-S2", label="Patient P3", tags=("C", "D"), box=(29, 24, 24)),
+]
+CMAP, ER_LIMS = "RdYlBu_r", (0.0, 1.75)      # tumour-ER colour bar: blue(low)->yellow->red(high)
+er_display = lambda z: np.clip(0.602 * z + 0.612, *ER_LIMS)   # z -> display value (white ~ median)
+# marker areas (pt^2): tumour circle, efflux star, other cross -- for full sections vs zoom insets
+SZ = dict(full=dict(tumor=14, star=34, cross=22),
+          zoom=dict(tumor=143, star=230, cross=127))
+
+ER10  = ["ESR1","PGR","GREB1","TFF1","GATA3","FOXA1","XBP1","NRIP1","SLC39A6","CA12"]
+LAM23 = ["ABCA1","ABCG1","NR1H3","NR1H2","APOE","APOC1","PLTP","SOAT1","NCEH1","LIPA","NPC2",
+         "TREM2","GPNMB","SPP1","FABP5","LPL","CD9","LGALS3","PLIN2","CD36","MSR1","MARCO","OLR1"]
+OFFS  = [(0,-2),(0,2),(-1,-1),(-1,1),(1,-1),(1,1)]            # first-ring hex neighbours
+
+# data + scoring
+def zwin(x, grp):                            # within-section z-score
+    x = pd.Series(x)
+    return x.groupby(grp).transform(lambda v: (v - v.mean()) / (v.std(ddof=1) or 1))
+
+def load_and_classify(path=DATA):
+    df = pd.read_csv(path)
+    df["ER_activity"] = np.nanmean([zwin(df[g], df["sample"]) for g in ER10], axis=0)
+    df["EFF"]         = np.nanmean([zwin(df[g], df["sample"]) for g in LAM23], axis=0)
+    df["ER_z"] = np.nan; df["eff_mac"] = False
+    for s in df["sample"].unique():          # per section: z(ER) + label each mac by LAM signature
+        idx = df.index[df["sample"] == s]; sub = df.loc[idx]
+        er = sub["ER_activity"].values
+        df.loc[idx, "ER_z"]    = (er - np.nanmean(er)) / (np.nanstd(er, ddof=1) or 1)
+        df.loc[idx, "eff_mac"] = (sub["dominant"].values == "mac") & (sub["EFF"].values > 0)
+    return df
+
+# one panel
+def draw_panel(ax, sub, sizes, box=None, window=None):
+    tum = sub[sub.dominant == "tumor"]; mac = sub[sub.dominant == "mac"]
+    eff, oth = mac[mac.eff_mac], mac[~mac.eff_mac]
+    ax.scatter(tum.array_col, -tum.array_row, c=er_display(tum.ER_z), cmap=CMAP,
+               norm=Normalize(*ER_LIMS), s=sizes["tumor"], linewidths=0)
+    ax.scatter(oth.array_col, -oth.array_row, marker="X", c="0.35", s=sizes["cross"], linewidths=0)
+    ax.scatter(eff.array_col, -eff.array_row, marker="*", c="k",    s=sizes["star"],  linewidths=0)
+    ax.set_aspect("equal")
+    if box is not None:
+        r0, c0, s = box
+        ax.add_patch(Rectangle((c0, -(r0 + s)), s, s, fill=False, ec="k", lw=1.3))
+    if window is None:
+        ax.axis("off")
+    else:
+        r0, c0, s = window
+        ax.set_xlim(c0, c0 + s); ax.set_ylim(-(r0 + s), -r0)
+        ax.set_xticks([]); ax.set_yticks([])
+        for sp in ax.spines.values(): sp.set_linewidth(1.3)
+
+#figure
+def main():
+    df = load_and_classify()
+    fig = plt.figure(figsize=(14, 9.2))
+    gs = fig.add_gridspec(2, 3, width_ratios=[1.35, 1.0, 0.42], hspace=0.20, wspace=0.08)
+    fig.suptitle("Spatial map: tumour ER (circles) + efflux (★) vs other (✖) macrophages "
+                 "— GSE289326 Visium", fontsize=14, fontweight="bold", y=0.98)
+
+    fulls, zooms = [], []
+    for r, cfg in enumerate(PANELS):
+        sub = df[df["sample"] == cfg["sample"]]
+        r0, c0, s = cfg["box"]
+        axf, axz = fig.add_subplot(gs[r, 0]), fig.add_subplot(gs[r, 1])
+        draw_panel(axf, sub, SZ["full"], box=cfg["box"])
+        draw_panel(axz, sub, SZ["zoom"], window=cfg["box"])
+        axf.set_title(f"{cfg['tags'][0]}  {cfg['label']} (post-Tx)", fontsize=11.5, fontweight="bold", loc="left")
+        axz.set_title(f"{cfg['tags'][1]}  Zoom: efflux macrophages among high-ER/red tumour",
+                      fontsize=11.5, fontweight="bold", loc="left")
+        fulls.append(axf); zooms.append(axz)
+        for corner in [(-r0,), (-(r0+s),)]:                       # dashed box->zoom connectors
+            y = corner[0]
+            fig.add_artist(ConnectionPatch((c0, y), (c0+s, y), "data", "data",
+                           axesA=axz, axesB=axf, color="0.55", lw=0.8, ls=(0, (4, 3))))
+
+    # colour bar + macrophage key (delete this block for the legend-free version)
+    cax = fig.add_axes([0.9, 0.57, 0.02, 0.29])
+    fig.colorbar(plt.cm.ScalarMappable(norm=Normalize(*ER_LIMS), cmap=CMAP), cax=cax,
+                 ticks=np.arange(0, 1.76, 0.25)).set_label("tumour ER activity (red = high)", fontsize=10)
+    axl = fig.add_axes([0.80, 0.11, 0.19, 0.32]); axl.axis("off")
+    red, blue = plt.get_cmap(CMAP)(0.83), plt.get_cmap(CMAP)(0.17)
+    axl.legend(handles=[
+        Line2D([0],[0], marker="*", color="w", markerfacecolor="k", markersize=15, label="efflux macrophage"),
+        Line2D([0],[0], marker="X", color="w", markerfacecolor="0.35", markersize=12, label="other macrophage"),
+        Line2D([0],[0], marker="o", color="w", markerfacecolor=red,  markersize=12, label="tumour spot, high ER"),
+        Line2D([0],[0], marker="o", color="w", markerfacecolor=blue, markersize=12, label="tumour spot, low ER"),
+    ], loc="upper left", frameon=False, fontsize=11, labelspacing=1.1)
+
+    fig.savefig(OUT); print("saved", OUT)
+
+if __name__ == "__main__":
+    import os; os.makedirs("out", exist_ok=True); main()
