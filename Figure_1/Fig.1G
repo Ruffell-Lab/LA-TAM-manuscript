@@ -1,0 +1,71 @@
+# Figure 1G — SCAN-B ER+ recurrence forest (RFi / DRFi) by treatment group.
+import numpy as np,pandas as pd,math,csv,matplotlib
+matplotlib.use("Agg");import matplotlib.pyplot as plt
+B="/sessions/keen-modest-newton/mnt/bioinformatics";M="/sessions/keen-modest-newton/mnt/Macrophage with ER"
+# CIBERSORTx B-mode LM22 fractions for SCAN-B ER+ (edit to your own output):
+CIBX_SCANB=f"{M}/CIBERSORTx_2026/CIBERSORTx_Job3_Adjusted.txt"
+def logrank(t,e,g):
+    d=pd.DataFrame({'t':t,'e':e,'g':g}).dropna();O=E=V=0.
+    for tt in np.sort(d.loc[d.e==1,'t'].unique()):
+        ar=d[d.t>=tt];n=len(ar);n1=(ar.g==1).sum();de=d[(d.t==tt)&(d.e==1)];dn=len(de);d1=(de.g==1).sum()
+        if n>1:E+=dn*n1/n;V+=dn*(n1/n)*(1-n1/n)*(n-dn)/(n-1);O+=d1
+    return (math.erfc(abs((O-E)/math.sqrt(V))/math.sqrt(2)) if V>0 else 1.0)
+def coxbin(g,t,e):
+    g=np.asarray(g,float);t=np.asarray(t,float);e=np.asarray(e,float);b=0.;H=1.
+    for _ in range(60):
+        w=np.exp(g*b);gr=0.;H=0.
+        for tt in np.unique(t[e==1]):
+            rk=t>=tt;di=(t==tt)&(e==1);dn=di.sum()
+            if dn==0:continue
+            Wr=w[rk];Zr=g[rk];sw=Wr.sum();zb=(Wr*Zr).sum()/sw
+            gr+=g[di].sum()-dn*zb;H+=dn*((Wr*Zr*Zr).sum()/sw-zb*zb)
+        if H<=0:break
+        s=gr/H;b+=s
+        if abs(s)<1e-9:break
+    se=1/math.sqrt(H) if H>0 else float('nan')
+    return math.exp(b),math.exp(b-1.96*se),math.exp(b+1.96*se)
+def bh(ps):                       # Benjamini-Hochberg FDR
+    ps=np.asarray(ps,float);m=len(ps);o=np.argsort(ps)
+    q=ps[o]*m/(np.arange(m)+1);q=np.minimum.accumulate(q[::-1])[::-1]
+    out=np.empty_like(ps);out[o]=np.clip(q,0,1);return out
+def stars(p):return "" if p!=p else "****" if p<1e-4 else "***" if p<1e-3 else "**" if p<1e-2 else "*" if p<0.05 else ""
+# clinical labels
+d=pd.read_csv(f"{M}/SCANB_relapse_macro_efflux.csv");d=d[d.ERpos==True][["F","endo","RFi_d","RFi_e","DRFi_d","DRFi_e"]]
+# CIBERSORTx B-mode M0/M1/M2/total
+cib=pd.read_csv(CIBX_SCANB,sep="\t");cib["F"]=cib["Mixture"].astype(str)
+cib["M0"]=cib["Macrophages M0"];cib["M1"]=cib["Macrophages M1"];cib["M2"]=cib["Macrophages M2"];cib["Total"]=cib[["Macrophages M0","Macrophages M1","Macrophages M2"]].sum(1)
+d=d.merge(cib[["F","M0","M1","M2","Total"]],on="F",how="left")
+SIGS=[("M2 macrophage","M2"),("M1 macrophage","M1"),("M0 macrophage","M0"),("Total macrophage","Total")]
+GROUPS=[("Total",d),("SCAN-B Untreated",d[~d.endo]),("SCAN-B Endocrine-treated",d[d.endo])]
+EPS=[("RFi","RFi_d","RFi_e","#c0392b"),("DRFi","DRFi_d","DRFi_e","#7b3fa0")]
+# row labels (top->bottom): for each sig, RFi then DRFi
+rowlabs=[];rowkey=[]
+for sname,scol in SIGS:
+    for ep,td,ee,col in EPS:
+        rowlabs.append(f"{sname} · {ep}");rowkey.append((scol,td,ee,col,ep))
+ny=len(rowlabs)
+# pass 1: HR + log-rank p for every (group,row); BH per column (family = 8 tests)
+res={}
+for gname,sub in GROUPS:
+    ps=[]
+    for i,(scol,td,ee,col,ep) in enumerate(rowkey):
+        s=sub.dropna(subset=[scol,td,ee]);s=s[s[td]>0];hi=(s[scol]>s[scol].median()).astype(int)
+        hr,lo,up=coxbin(hi,s[td].values,s[ee].values);p=logrank(s[td].values,s[ee].values,hi.values)
+        res[(gname,i)]=dict(hr=hr,lo=lo,up=up,p=p,col=col);ps.append(p)
+    q=bh(np.array(ps,float))
+    for i in range(ny):res[(gname,i)]["q"]=q[i]
+# pass 2: plot
+fig,axs=plt.subplots(1,3,figsize=(16,6),sharey=True)
+for ax,(gname,sub) in zip(axs,GROUPS):
+    for i,(scol,td,ee,col,ep) in enumerate(rowkey):
+        yy=ny-1-i;r=res[(gname,i)]
+        ax.plot([r["lo"],r["up"]],[yy,yy],"-",color=col,lw=1.5);ax.plot(r["hr"],yy,"s",color=col,ms=5)
+        ax.text(0.02,yy+0.32,f"{stars(r['q'])} {r['hr']:.2f} ({r['lo']:.2f}–{r['up']:.2f})",transform=ax.get_yaxis_transform(),fontsize=7,color="black")
+    ax.axvline(1,ls="--",color="#999",lw=1)
+    ax.set_xscale("log");ax.set_xlim(0.4,6);ax.set_xticks([0.5,1,2,4]);ax.set_xticklabels(["0.5","1","2","4"])
+    ax.set_title(gname,fontsize=10);ax.set_xlabel("HR (high vs low)")
+axs[0].set_yticks(range(ny));axs[0].set_yticklabels(rowlabs[::-1],fontsize=8.5)
+fig.suptitle("SCAN-B ER+ by treatment — recurrence (RFi red / DRFi purple), median split, HR high vs low\nCIBERSORTx B-mode; stars = log-rank P, Benjamini-Hochberg FDR across the 8 tests per column",fontweight="bold",fontsize=10,y=1.02)
+fig.text(0.5,-0.01,"Untreated arm n=268 (RFi 26 / DRFi 13 events): very wide CI, underpowered.  *<0.05 **<0.01 ***<0.001 ****<1e-4 (FDR)",ha="center",fontsize=7,color="#555")
+plt.tight_layout();plt.savefig(f"{M}/SCANB_forest_macro_efflux_RFi_DRFi_byTreatment.pdf",bbox_inches="tight")
+print("saved")
