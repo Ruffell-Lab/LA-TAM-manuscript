@@ -1,0 +1,77 @@
+#GSE240112 cancer GSEA (RT tamoxifen-resistant vs PT primary)
+import csv, sys, matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+SRC = "/sessions/fervent-gracious-bardeen/mnt/GSE240112/GSE240112_cancer_GSEA_results.csv"
+MODE = sys.argv[1] if len(sys.argv) > 1 else "curated"   # "curated" or "all"
+OUT = ("/sessions/fervent-gracious-bardeen/mnt/GSE240112/GSE240112_cancer_GSEA_redblue_p05"
+       + ("_ALL" if MODE == "all" else "") + ".pdf")
+
+# curated, biologically distinct representative
+CURATED = {
+ "HALLMARK_ESTROGEN_RESPONSE_EARLY","HALLMARK_ESTROGEN_RESPONSE_LATE",
+ "GOBP_STEROID_HORMONE_BIOSYNTHETIC_PROCESS","GOBP_C21_STEROID_HORMONE_BIOSYNTHETIC_PROCESS",
+ "GOBP_C21_STEROID_HORMONE_METABOLIC_PROCESS","GOBP_REGULATION_OF_STEROID_HORMONE_BIOSYNTHETIC_PROCESS",
+ "GOBP_REGULATION_OF_INTRACELLULAR_STEROID_HORMONE_RECEPTOR_SIGNALING_PATHWAY",
+ "REACTOME_CHOLESTEROL_BIOSYNTHESIS","GOBP_STEROID_BIOSYNTHETIC_PROCESS",
+ "HALLMARK_CHOLESTEROL_HOMEOSTASIS","GOBP_REGULATION_OF_INTRACELLULAR_ESTROGEN_RECEPTOR_SIGNALING_PATHWAY",
+ "GOBP_CELLULAR_RESPONSE_TO_LIPID","GOBP_CHOLESTEROL_EFFLUX",
+ "GOBP_FATTY_ACID_TRANSPORT","GOBP_STEROL_HOMEOSTASIS",
+ "GOBP_REVERSE_CHOLESTEROL_TRANSPORT","GOBP_STEROL_TRANSPORT",
+}
+
+rows = []
+with open(SRC) as f:
+    for r in csv.DictReader(f):
+        p = float(r["pval"]); nes = float(r["NES"])
+        if p < 0.05 and (MODE == "all" or r["pathway"] in CURATED):
+            rows.append((r["pathway"], nes, p))
+rows.sort(key=lambda x: x[1])
+
+def pretty(name):
+    n = name.replace("GOBP_", "").replace("HALLMARK_", "").replace("REACTOME_", "")
+    n = n.replace("_", " ").title()
+    n = (n.replace("C21", "C21").replace("Mtorc1", "mTORC1")
+          .replace("Intracellular", "Intracell.").replace("Biosynthetic", "Biosynth.")
+          .replace("Hormone Receptor Signaling Pathway", "Hormone Receptor Signaling")
+          .replace("Receptor Signaling Pathway", "Receptor Signaling"))
+    tag = ("Hallmark" if name.startswith("HALLMARK") else
+           "Reactome" if name.startswith("REACTOME") else "GO:BP")
+    return f"{n}  ({tag})"
+
+labels = [pretty(n) for n, _, _ in rows]
+nes = [x[1] for x in rows]
+RED = "#C0392B"; BLUE = "#2C5FA8"
+colors = [RED if v > 0 else BLUE for v in nes]
+
+h = max(5.5, 0.42 * len(rows) + 2.2)
+fig, ax = plt.subplots(figsize=(9.6, h))
+y = range(len(rows))
+ax.barh(list(y), nes, color=colors, edgecolor="black", linewidth=0.5, height=0.72, zorder=3)
+ax.set_axisbelow(True)
+ax.xaxis.grid(True, color="#cfcfcf", lw=0.7, zorder=0)
+ax.axvline(0, color="black", lw=1.1, zorder=4)
+ax.set_yticks(list(y)); ax.set_yticklabels(labels, fontsize=8.3)
+ax.set_xlabel("NES", fontsize=11)
+lim = max(2.9, max(abs(v) for v in nes) + 0.5)
+ax.set_xlim(-lim, lim)
+ax.tick_params(axis="x", labelsize=9)
+for s in ax.spines.values():
+    s.set_linewidth(1.0); s.set_edgecolor("#444")
+for yi, v in zip(y, nes):
+    ax.text(v + (0.07 if v > 0 else -0.07), yi, f"{v:.2f}",
+            va="center", ha="left" if v > 0 else "right", fontsize=7.4, color="#333")
+
+sub = "" if MODE == "all" else "representative "
+ax.set_title("GSE240112 cancer cells — GSEA (Tamoxifen-resistant RT vs Primary PT)\n"
+             + sub + "pathways with p < 0.05", fontsize=12.5, fontweight="bold", pad=12)
+leg = [Line2D([0],[0], marker="s", color="w", markerfacecolor=RED, markersize=11,
+              label="up in Resistant / RT (NES > 0)"),
+       Line2D([0],[0], marker="s", color="w", markerfacecolor=BLUE, markersize=11,
+              label="up in Primary / PT (NES < 0)")]
+ax.legend(handles=leg, loc="lower right", fontsize=8.6, frameon=True, framealpha=0.95)
+plt.tight_layout()
+plt.savefig(OUT, bbox_inches="tight")
+print("saved ->", OUT, "| n =", len(rows))
