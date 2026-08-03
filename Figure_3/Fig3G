@@ -1,0 +1,27 @@
+# GSEA on FELINE cancer cells.
+suppressPackageStartupMessages({library(data.table); library(fgsea); library(msigdbr)})
+DIR <- "/Users/jieli/Desktop/GSE211434"
+msig <- function(coll, sub=NULL){
+  out <- tryCatch({ a<-list(species="Homo sapiens",collection=coll); if(!is.null(sub)) a$subcollection<-sub
+                    do.call(msigdbr::msigdbr,a) }, error=function(e) NULL)
+  if(is.null(out)){ a<-list(species="Homo sapiens",category=coll); if(!is.null(sub)) a$subcategory<-sub
+                    out<-do.call(msigdbr::msigdbr,a) }; as.data.frame(out) }
+H <- msig("H"); BP <- msig("C5","GO:BP"); RE <- msig("C2","CP:REACTOME")
+focus <- c("GOBP_STEROID_HORMONE_BIOSYNTHETIC_PROCESS","GOBP_C21_STEROID_HORMONE_BIOSYNTHETIC_PROCESS",
+           "GOBP_C21_STEROID_HORMONE_METABOLIC_PROCESS","GOBP_REGULATION_OF_STEROID_HORMONE_BIOSYNTHETIC_PROCESS",
+           "GOBP_REGULATION_OF_INTRACELLULAR_STEROID_HORMONE_RECEPTOR_SIGNALING_PATHWAY","REACTOME_CHOLESTEROL_BIOSYNTHESIS",
+           "GOBP_REGULATION_OF_INTRACELLULAR_ESTROGEN_RECEPTOR_SIGNALING_PATHWAY","GOBP_CELLULAR_RESPONSE_TO_LIPID",
+           "GOBP_STEROID_BIOSYNTHETIC_PROCESS","HALLMARK_CHOLESTEROL_HOMEOSTASIS","GOBP_STEROL_TRANSPORT",
+           "GOBP_REVERSE_CHOLESTEROL_TRANSPORT","GOBP_STEROL_HOMEOSTASIS","GOBP_FATTY_ACID_TRANSPORT",
+           "GOBP_CHOLESTEROL_EFFLUX","HALLMARK_ESTROGEN_RESPONSE_LATE","HALLMARK_ESTROGEN_RESPONSE_EARLY")
+big <- rbind(H[,c("gs_name","gene_symbol")], BP[,c("gs_name","gene_symbol")], RE[,c("gs_name","gene_symbol")])
+pw  <- split(big$gene_symbol, big$gs_name)[focus]; pw <- pw[!sapply(pw,is.null)]
+for (cn in c("d14_vs_d0","d180_vs_d0","d180_vs_d14")) {
+  rk <- fread(file.path(DIR, paste0("FELINE_sens_",cn,".rnk")), header=FALSE)
+  ranks <- sort(setNames(rk$V2, rk$V1), decreasing=TRUE)
+  set.seed(1); fg <- as.data.table(fgsea(pw, ranks, minSize=3, maxSize=500))
+  fwrite(fg[order(-NES),.(pathway,NES,pval,padj,size)], file.path(DIR, paste0("FELINE_sens_",cn,"_GSEA.csv")))
+  cat("\n==", cn, "==\n"); print(fg[order(-NES),.(pathway,NES,pval,padj)])
+}
+cat("\nDONE -> FELINE_sens_{d14_vs_d0,d180_vs_d0,d180_vs_d14}_GSEA.csv in", DIR, "\n")
+
