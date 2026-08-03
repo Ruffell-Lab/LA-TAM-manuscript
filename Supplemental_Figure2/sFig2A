@@ -1,0 +1,75 @@
+# FELINE immune-cell annotation marker dotplot
+import numpy as np, csv
+import matplotlib; matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+DIR = "/Users/jieli/Desktop/GSE211434"
+
+CELLTYPES = ["CD4+ T cells","CD8+ T cells","NK cells","B cells","Plasma cells",
+             "DC","M1 macrophages","M2 macrophages"]
+MARKERS = ["CD3D","CD3E","CD2","CD4","IL7R","FOXP3","CD8A","CD8B","GZMK","GZMB",
+           "NKG7","GNLY","KLRD1","NCAM1","MS4A1","CD79A","CD79B","CD19","MZB1",
+           "JCHAIN","IGHG1","SDC1","PRDM1","CD1C","FCER1A","LILRA4","CLEC9A",
+           "ITGAX","CD68","LYZ","C1QA","C1QB","CD163","MRC1"]
+# per-cell CellTypeSubtype
+label = {}
+with open(f"{DIR}/GSE211434_cell_types.txt") as fh:
+    hdr = fh.readline().rstrip("\n").split("\t"); ci = {h:i for i,h in enumerate(hdr)}
+    for line in fh:
+        p = line.rstrip("\n").split("\t")
+        st = p[ci["CellTypeSubtype"]]
+        if st in CELLTYPES: label[p[ci["CellID"]]] = st
+# marker counts (genes x cells)
+with open(f"{DIR}/immune_marker_rows.tsv") as fh:
+    head = fh.readline().rstrip("\n").split("\t")
+    cellids = head[3:]                       
+    gene_row = {}
+    for line in fh:
+        p = line.rstrip("\n").split("\t")
+        gene_row[p[2]] = np.array(p[3:], dtype=np.float32)
+keep = np.array([c in label for c in cellids])
+ct   = np.array([label.get(c, "") for c in cellids])
+pct  = np.full((len(CELLTYPES), len(MARKERS)), np.nan)  
+mean = np.full((len(CELLTYPES), len(MARKERS)), np.nan)   
+for j, g in enumerate(MARKERS):
+    v = gene_row.get(g)
+    if v is None: continue
+    lv = np.log1p(v)
+    for i, t in enumerate(CELLTYPES):
+        m = keep & (ct == t)
+        if m.sum() == 0: continue
+        pct[i, j]  = (v[m] > 0).mean() * 100
+        mean[i, j] = lv[m].mean()
+# scaled mean = z-score across cell types
+scaled = np.full_like(mean, np.nan)
+for j in range(len(MARKERS)):
+    col = mean[:, j]; mu, sd = np.nanmean(col), np.nanstd(col)
+    if sd > 0: scaled[:, j] = (col - mu) / sd
+# draw
+fig, ax = plt.subplots(figsize=(13.5, 4.4))
+vmax = 2.2
+for i in range(len(CELLTYPES)):
+    for j in range(len(MARKERS)):
+        if np.isnan(pct[i, j]): continue
+        s = (pct[i, j] / 100) * 240 + 3
+        c = np.clip(scaled[i, j], -0.5, vmax)
+        ax.scatter(j, i, s=s, c=[c], cmap="Reds", vmin=-0.5, vmax=vmax,
+                   edgecolors="#999999", linewidths=0.4, zorder=3)
+ax.set_xticks(range(len(MARKERS))); ax.set_xticklabels(MARKERS, rotation=90, fontsize=8)
+ax.set_yticks(range(len(CELLTYPES))); ax.set_yticklabels(CELLTYPES, fontsize=9)
+ax.set_ylim(-0.6, len(CELLTYPES)-0.4); ax.invert_yaxis()
+ax.set_xlim(-0.6, len(MARKERS)-0.4)
+for x in range(len(MARKERS)): ax.axvline(x, color="#eeeeee", lw=0.5, zorder=0)
+ax.set_title("FELINE immune cell annotation", fontsize=12)
+sm = plt.cm.ScalarMappable(cmap="Reds", norm=plt.Normalize(-0.5, vmax)); sm.set_array([])
+cb = fig.colorbar(sm, ax=ax, shrink=0.55, pad=0.01); cb.set_label("scaled mean expression", fontsize=9)
+# size legend
+handles = [Line2D([0],[0], marker='o', color='w', markerfacecolor='#888', markersize=np.sqrt((p/100)*240+3),
+                  label=f"{p}%") for p in [25,50,100]]
+ax.legend(handles=handles, title="% expressing", loc="center left",
+          bbox_to_anchor=(1.02, 0.15), frameon=False, labelspacing=1.4, fontsize=8, title_fontsize=9)
+for s in ("top","right","left","bottom"): ax.spines[s].set_visible(False)
+plt.tight_layout()
+plt.savefig(f"{DIR}/FELINE_immune_annotation_marker_dotplot_RECON.pdf", bbox_inches="tight"); plt.close()
+print("DONE -> FELINE_immune_annotation_marker_dotplot_RECON.pdf")
