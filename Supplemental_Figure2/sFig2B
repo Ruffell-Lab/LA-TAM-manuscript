@@ -1,0 +1,55 @@
+import scanpy as sc, pandas as pd, numpy as np, anndata as ad
+DIR="/Users/jieli/Desktop/GSE211434"
+
+meta=pd.read_csv(f"{DIR}/GSE211434_cell_types.txt",sep="\t",low_memory=False).set_index("CellID")
+mac_ids=meta.index[meta["CellType"]=="Macrophages"]
+
+# load counts for macrophage cells only 
+with open(f"{DIR}/GSE211434_counts.txt") as f: header=f.readline().rstrip("\n").split("\t")
+cells=header[3:]; keep=[i for i,c in enumerate(cells) if c in set(mac_ids)]
+usecols=[2]+[i+3 for i in keep]                     
+df=pd.read_csv(f"{DIR}/GSE211434_counts.txt",sep="\t",usecols=usecols)
+df=df.set_index("Gene.Symbol"); df=df[~df.index.duplicated()]
+A=ad.AnnData(df.T.values.astype("float32"),obs=pd.DataFrame(index=df.columns),var=pd.DataFrame(index=df.index))
+A.obs=A.obs.join(meta[["TreatmentArm","ResponseYN","Patient","Day"]])
+
+# standard scanpy pipeline
+sc.pp.normalize_total(A,target_sum=1e4); sc.pp.log1p(A)
+sc.pp.highly_variable_genes(A,n_top_genes=2000); A.raw=A; A=A[:,A.var.highly_variable]
+sc.pp.scale(A,max_value=10); sc.tl.pca(A,n_comps=30)
+sc.pp.neighbors(A,n_neighbors=15,n_pcs=30); sc.tl.umap(A); sc.tl.leiden(A,resolution=1.0)
+
+# annotate Leiden clusters by markers 
+markers={"LAM_FABP5":["FABP5","FABP4","LPL","PLIN2","LIPA"],
+ "LAM_APOE":["APOE","APOC1","GPNMB","TREM2","NR1H3","ABCA1","ACP5"],
+ "M2_TAM":["MRC1","CD163","SELENOP","F13A1","FOLR2","LYVE1"],
+ "M1_inflam":["IL1B","CXCL9","CXCL10","TNF","IL6"],
+ "Monocyte":["S100A8","S100A9","FCN1","VCAN"],"Mono_ncl":["FCGR3A","LST1","CDKN1C"],
+ "cDC2":["CD1C","CLEC10A","FCER1A"],"cDC1":["CLEC9A","XCR1","BATF3"],
+ "mregDC":["LAMP3","CCR7","FSCN1"],"pDC":["LILRA4","GZMB","IRF7"],
+ "IFN":["ISG15","IFIT1","IFIT3","MX1"],"Prolif":["MKI67","TOP2A","STMN1"],"Complement":["C1QA","C1QB","C1QC"]}
+sc.tl.score_genes  # use mean expr per cluster to label
+import numpy as np
+expr=pd.DataFrame(A.raw[:, :].X.toarray() if hasattr(A.raw.X,'toarray') else A.raw.X, columns=A.raw.var_names, index=A.obs_names)
+def label(cl):
+    cells=A.obs_names[A.obs.leiden==cl]; m=expr.loc[cells]
+    sc_={k:m[[g for g in gs if g in m.columns]].mean().mean() for k,gs in markers.items()}
+    return max(sc_,key=sc_.get)
+A.obs["subtype"]=A.obs.leiden.map({cl:label(cl) for cl in A.obs.leiden.unique()})
+
+sc.pl.umap(A,color=["subtype","ResponseYN"],save="_FELINE_macrophage_subtypes.pdf")
+sc.pl.dotplot(A,{k:v for k,v in markers.items()},groupby="subtype",save="_FELINE_macrophage_markers.pdf")
+
+# composition: Arm A sensitive vs resistant, per-patient + Mann-Whitney ---
+from scipy.stats import mannwhitneyu
+armA=A.obs[A.obs.TreatmentArm=="A"]
+frac=armA.groupby(["Patient","subtype"]).size().unstack(fill_value=0)
+frac=frac.div(frac.sum(1),axis=0)
+resp=armA.groupby("Patient")["ResponseYN"].first()
+for sub in frac.columns:
+    nr=frac.loc[resp[resp=="Non-response"].index,sub]; r=frac.loc[resp[resp=="Response"].index,sub]
+    try: p=mannwhitneyu(nr,r).pvalue
+    except: p=np.nan
+    print(f"{sub:14s} resist {nr.mean()*100:5.1f}%  sens {r.mean()*100:5.1f}%  p={p:.3g}")
+A.write(f"{DIR}/FELINE_macrophages_annotated.h5ad")
+print("done -> figures in ./figures/, h5ad saved")
