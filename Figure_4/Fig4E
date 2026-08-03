@@ -1,0 +1,19 @@
+## three-group violin (BULK / OTHER / EFFLUX)
+source("_helpers.R")
+df <- classify_neighbors(subset(load_data(), timepoint == "S1"), "LAM")
+T  <- subset(df, dominant == "tumor")
+G <- rbind(data.frame(grp = "BULK",   ER_z = T$ER_z[T$nmac > 0]),
+           data.frame(grp = "OTHER",  ER_z = T$ER_z[which(T$cat == "OTHER")]),
+           data.frame(grp = "EFFLUX", ER_z = T$ER_z[which(T$cat == "EFFLUX")]))
+G$grp <- factor(G$grp, levels = c("BULK","OTHER","EFFLUX"))
+res <- patient_effect(subset(T, cat %in% c("OTHER","EFFLUX")))
+p <- ggplot(G, aes(grp, ER_z, fill = grp)) +
+  geom_violin(trim = FALSE, alpha = .5) + geom_boxplot(width = .12, outlier.shape = NA) +
+  scale_fill_manual(values = c(BULK = "#b9c4cf", OTHER = "#9aa0a6", EFFLUX = "#c0392b")) +
+  geom_hline(yintercept = 0, linetype = 3, colour = "grey50") +
+  labs(x = NULL, y = "tumour ER (z)",
+       title = sprintf("[PRE] BIOLOGICAL split (LAM>0)  EFFLUX-OTHER delta=%.2f  %d/6  perm p=%.3f",
+                       res$delta, res$up, res$p_perm)) +
+  theme_pub()
+ggsave("out/16_bulk_other_efflux_BIOLOGICAL_PRE.pdf", p, width = 4.8, height = 5)
+print(res[c("delta","up","p_perm","p_t")])
