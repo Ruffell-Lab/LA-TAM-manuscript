@@ -1,3 +1,4 @@
+#Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed under the supervision of study bioinformatician.
 # Figure 1D-F (SCAN-B) — macrophage burden vs survival, KM + log-rank.
 # Survival comparisons are pre-specified/confirmatory -> raw log-rank P (no FDR).
 import numpy as np, pandas as pd, math, re, matplotlib
