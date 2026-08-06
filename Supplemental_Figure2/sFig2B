@@ -1,6 +1,6 @@
+#Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed under the supervision of study bioinformatician.
 import scanpy as sc, pandas as pd, numpy as np, anndata as ad
 DIR="/Users/jieli/Desktop/GSE211434"
-
 meta=pd.read_csv(f"{DIR}/GSE211434_cell_types.txt",sep="\t",low_memory=False).set_index("CellID")
 mac_ids=meta.index[meta["CellType"]=="Macrophages"]
 
