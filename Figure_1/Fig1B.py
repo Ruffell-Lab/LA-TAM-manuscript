@@ -1,3 +1,4 @@
+#Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed under the supervision of study bioinformatician."
 import numpy as np, pandas as pd, math, re, matplotlib, openpyxl
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
