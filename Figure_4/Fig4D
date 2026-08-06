@@ -1,3 +1,4 @@
+#Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed under the supervision of study bioinformatician.
 import numpy as np, pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -6,7 +7,6 @@ from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle, ConnectionPatch
 from matplotlib.lines import Line2D
 
-# configuration
 DATA   = "data/gse289326_rebuilt.csv"
 OUT    = "out/Fig4D_spatial_map.pdf"
 PANELS = [                                   # section + square zoom window (row0, col0, size)
