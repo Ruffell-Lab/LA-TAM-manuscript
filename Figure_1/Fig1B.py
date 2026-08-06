@@ -1,8 +1,7 @@
 # immune_heatmap_endocrine.py
 # Baseline LM22 immune profile by eventual outcome, within endocrine-treated ER+ disease.
 # Two cohorts side by side: TCGA (PFI) and SCAN-B (RFi). Fractions from CIBERSORTx B-mode.
-# Analytical scripts were developed with the assistance of generative AI
-# (Claude, version 1.17377.2). All resulting code was reviewed and deployed
+# Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed
 # under the supervision of the study bioinformatician.
 
 import math
