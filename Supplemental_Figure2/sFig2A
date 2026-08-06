@@ -1,3 +1,4 @@
+#Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed under the supervision of study bioinformatician.
 # FELINE immune-cell annotation marker dotplot
 import numpy as np, csv
 import matplotlib; matplotlib.use("Agg")
