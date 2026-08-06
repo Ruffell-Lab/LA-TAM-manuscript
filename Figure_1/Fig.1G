@@ -1,72 +1,234 @@
-#Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed under the supervision of study bioinformatician.
-# Figure 1G — SCAN-B ER+ recurrence forest (RFi / DRFi) by treatment group.
-import numpy as np,pandas as pd,math,csv,matplotlib
-matplotlib.use("Agg");import matplotlib.pyplot as plt
-B="/sessions/keen-modest-newton/mnt/bioinformatics";M="/sessions/keen-modest-newton/mnt/Macrophage with ER"
-# CIBERSORTx B-mode LM22 fractions for SCAN-B ER+ (edit to your own output):
-CIBX_SCANB=f"{M}/CIBERSORTx_2026/CIBERSORTx_Job3_Adjusted.txt"
-def logrank(t,e,g):
-    d=pd.DataFrame({'t':t,'e':e,'g':g}).dropna();O=E=V=0.
-    for tt in np.sort(d.loc[d.e==1,'t'].unique()):
-        ar=d[d.t>=tt];n=len(ar);n1=(ar.g==1).sum();de=d[(d.t==tt)&(d.e==1)];dn=len(de);d1=(de.g==1).sum()
-        if n>1:E+=dn*n1/n;V+=dn*(n1/n)*(1-n1/n)*(n-dn)/(n-1);O+=d1
-    return (math.erfc(abs((O-E)/math.sqrt(V))/math.sqrt(2)) if V>0 else 1.0)
-def coxbin(g,t,e):
-    g=np.asarray(g,float);t=np.asarray(t,float);e=np.asarray(e,float);b=0.;H=1.
-    for _ in range(60):
-        w=np.exp(g*b);gr=0.;H=0.
-        for tt in np.unique(t[e==1]):
-            rk=t>=tt;di=(t==tt)&(e==1);dn=di.sum()
-            if dn==0:continue
-            Wr=w[rk];Zr=g[rk];sw=Wr.sum();zb=(Wr*Zr).sum()/sw
-            gr+=g[di].sum()-dn*zb;H+=dn*((Wr*Zr*Zr).sum()/sw-zb*zb)
-        if H<=0:break
-        s=gr/H;b+=s
-        if abs(s)<1e-9:break
-    se=1/math.sqrt(H) if H>0 else float('nan')
-    return math.exp(b),math.exp(b-1.96*se),math.exp(b+1.96*se)
-def bh(ps):                       # Benjamini-Hochberg FDR
-    ps=np.asarray(ps,float);m=len(ps);o=np.argsort(ps)
-    q=ps[o]*m/(np.arange(m)+1);q=np.minimum.accumulate(q[::-1])[::-1]
-    out=np.empty_like(ps);out[o]=np.clip(q,0,1);return out
-def stars(p):return "" if p!=p else "****" if p<1e-4 else "***" if p<1e-3 else "**" if p<1e-2 else "*" if p<0.05 else ""
-# clinical labels
-d=pd.read_csv(f"{M}/SCANB_relapse_macro_efflux.csv");d=d[d.ERpos==True][["F","endo","RFi_d","RFi_e","DRFi_d","DRFi_e"]]
-# CIBERSORTx B-mode M0/M1/M2/total
-cib=pd.read_csv(CIBX_SCANB,sep="\t");cib["F"]=cib["Mixture"].astype(str)
-cib["M0"]=cib["Macrophages M0"];cib["M1"]=cib["Macrophages M1"];cib["M2"]=cib["Macrophages M2"];cib["Total"]=cib[["Macrophages M0","Macrophages M1","Macrophages M2"]].sum(1)
-d=d.merge(cib[["F","M0","M1","M2","Total"]],on="F",how="left")
-SIGS=[("M2 macrophage","M2"),("M1 macrophage","M1"),("M0 macrophage","M0"),("Total macrophage","Total")]
-GROUPS=[("Total",d),("SCAN-B Untreated",d[~d.endo]),("SCAN-B Endocrine-treated",d[d.endo])]
-EPS=[("RFi","RFi_d","RFi_e","#c0392b"),("DRFi","DRFi_d","DRFi_e","#7b3fa0")]
-# row labels (top->bottom): for each sig, RFi then DRFi
-rowlabs=[];rowkey=[]
-for sname,scol in SIGS:
-    for ep,td,ee,col in EPS:
-        rowlabs.append(f"{sname} · {ep}");rowkey.append((scol,td,ee,col,ep))
-ny=len(rowlabs)
-# pass 1: HR + log-rank p for every (group,row); BH per column (family = 8 tests)
-res={}
-for gname,sub in GROUPS:
-    ps=[]
-    for i,(scol,td,ee,col,ep) in enumerate(rowkey):
-        s=sub.dropna(subset=[scol,td,ee]);s=s[s[td]>0];hi=(s[scol]>s[scol].median()).astype(int)
-        hr,lo,up=coxbin(hi,s[td].values,s[ee].values);p=logrank(s[td].values,s[ee].values,hi.values)
-        res[(gname,i)]=dict(hr=hr,lo=lo,up=up,p=p,col=col);ps.append(p)
-    q=bh(np.array(ps,float))
-    for i in range(ny):res[(gname,i)]["q"]=q[i]
-# pass 2: plot
-fig,axs=plt.subplots(1,3,figsize=(16,6),sharey=True)
-for ax,(gname,sub) in zip(axs,GROUPS):
-    for i,(scol,td,ee,col,ep) in enumerate(rowkey):
-        yy=ny-1-i;r=res[(gname,i)]
-        ax.plot([r["lo"],r["up"]],[yy,yy],"-",color=col,lw=1.5);ax.plot(r["hr"],yy,"s",color=col,ms=5)
-        ax.text(0.02,yy+0.32,f"{stars(r['q'])} {r['hr']:.2f} ({r['lo']:.2f}–{r['up']:.2f})",transform=ax.get_yaxis_transform(),fontsize=7,color="black")
-    ax.axvline(1,ls="--",color="#999",lw=1)
-    ax.set_xscale("log");ax.set_xlim(0.4,6);ax.set_xticks([0.5,1,2,4]);ax.set_xticklabels(["0.5","1","2","4"])
-    ax.set_title(gname,fontsize=10);ax.set_xlabel("HR (high vs low)")
-axs[0].set_yticks(range(ny));axs[0].set_yticklabels(rowlabs[::-1],fontsize=8.5)
-fig.suptitle("SCAN-B ER+ by treatment — recurrence (RFi red / DRFi purple), median split, HR high vs low\nCIBERSORTx B-mode; stars = log-rank P, Benjamini-Hochberg FDR across the 8 tests per column",fontweight="bold",fontsize=10,y=1.02)
-fig.text(0.5,-0.01,"Untreated arm n=268 (RFi 26 / DRFi 13 events): very wide CI, underpowered.  *<0.05 **<0.01 ***<0.001 ****<1e-4 (FDR)",ha="center",fontsize=7,color="#555")
-plt.tight_layout();plt.savefig(f"{M}/SCANB_forest_macro_efflux_RFi_DRFi_byTreatment.pdf",bbox_inches="tight")
+# Figure 1G: recurrence forest plot (RFi / DRFi) for SCAN-B ER+, split by endocrine treatment.
+# Macrophage fractions come from CIBERSORTx B-mode (LM22).
+# Analytical scripts were developed with the assistance of generative AI
+# (Claude, version 1.17377.2). All resulting code was reviewed and deployed
+# under the supervision of the study bioinformatician.
+
+import math
+
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+
+BIO_DIR = "/sessions/keen-modest-newton/mnt/bioinformatics"
+MACRO_DIR = "/sessions/keen-modest-newton/mnt/Macrophage with ER"
+
+CLIN_FILE = MACRO_DIR + "/SCANB_relapse_macro_efflux.csv"
+# point this at your own CIBERSORTx run
+CIBX_FILE = MACRO_DIR + "/CIBERSORTx_2026/CIBERSORTx_Job3_Adjusted.txt"
+
+OUT_PDF = MACRO_DIR + "/SCANB_forest_macro_efflux_RFi_DRFi_byTreatment.pdf"
+
+
+def logrank_p(time, event, group):
+    """Two-sided log-rank test, group coded 0/1. Returns the p-value."""
+    df = pd.DataFrame({"t": time, "e": event, "g": group}).dropna()
+
+    obs = 0.0
+    exp = 0.0
+    var = 0.0
+
+    for t in np.sort(df.loc[df.e == 1, "t"].unique()):
+        at_risk = df[df.t >= t]
+        n = len(at_risk)
+        n1 = (at_risk.g == 1).sum()
+
+        died = df[(df.t == t) & (df.e == 1)]
+        d = len(died)
+        d1 = (died.g == 1).sum()
+
+        if n > 1:
+            exp += d * n1 / n
+            var += d * (n1 / n) * (1 - n1 / n) * (n - d) / (n - 1)
+            obs += d1
+
+    if var <= 0:
+        return 1.0
+
+    z = abs(obs - exp) / math.sqrt(var)
+    return math.erfc(z / math.sqrt(2))
+
+
+def cox_binary(group, time, event, max_iter=60, tol=1e-9):
+    """Cox PH with a single binary covariate (Breslow ties).
+
+    Newton-Raphson on the partial likelihood; returns (HR, lower95, upper95).
+    """
+    g = np.asarray(group, dtype=float)
+    t = np.asarray(time, dtype=float)
+    e = np.asarray(event, dtype=float)
+
+    beta = 0.0
+    info = 1.0
+
+    for _ in range(max_iter):
+        w = np.exp(g * beta)
+        score = 0.0
+        info = 0.0
+
+        for tt in np.unique(t[e == 1]):
+            in_risk = t >= tt
+            is_death = (t == tt) & (e == 1)
+            d = is_death.sum()
+            if d == 0:
+                continue
+
+            wr = w[in_risk]
+            zr = g[in_risk]
+            sw = wr.sum()
+            zbar = (wr * zr).sum() / sw
+
+            score += g[is_death].sum() - d * zbar
+            info += d * ((wr * zr * zr).sum() / sw - zbar * zbar)
+
+        if info <= 0:
+            break
+
+        step = score / info
+        beta += step
+        if abs(step) < tol:
+            break
+
+    se = 1 / math.sqrt(info) if info > 0 else float("nan")
+    return math.exp(beta), math.exp(beta - 1.96 * se), math.exp(beta + 1.96 * se)
+
+
+def bh_fdr(pvals):
+    """Benjamini-Hochberg adjusted p-values."""
+    p = np.asarray(pvals, dtype=float)
+    m = len(p)
+    order = np.argsort(p)
+
+    q = p[order] * m / (np.arange(m) + 1)
+    q = np.minimum.accumulate(q[::-1])[::-1]
+
+    adj = np.empty_like(p)
+    adj[order] = np.clip(q, 0, 1)
+    return adj
+
+
+def star(p):
+    if p != p:            # NaN
+        return ""
+    if p < 1e-4:
+        return "****"
+    if p < 1e-3:
+        return "***"
+    if p < 1e-2:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return ""
+
+
+# load data
+
+clin = pd.read_csv(CLIN_FILE)
+clin = clin[clin.ERpos == True]
+clin = clin[["F", "endo", "RFi_d", "RFi_e", "DRFi_d", "DRFi_e"]]
+
+cibx = pd.read_csv(CIBX_FILE, sep="\t")
+cibx["F"] = cibx["Mixture"].astype(str)
+cibx["M0"] = cibx["Macrophages M0"]
+cibx["M1"] = cibx["Macrophages M1"]
+cibx["M2"] = cibx["Macrophages M2"]
+cibx["Total"] = cibx[["Macrophages M0", "Macrophages M1", "Macrophages M2"]].sum(axis=1)
+
+dat = clin.merge(cibx[["F", "M0", "M1", "M2", "Total"]], on="F", how="left")
+
+SIGNATURES = [
+    ("M2 macrophage", "M2"),
+    ("M1 macrophage", "M1"),
+    ("M0 macrophage", "M0"),
+    ("Total macrophage", "Total"),
+]
+
+ENDPOINTS = [
+    ("RFi", "RFi_d", "RFi_e", "#c0392b"),
+    ("DRFi", "DRFi_d", "DRFi_e", "#7b3fa0"),
+]
+
+PANELS = [
+    ("Total", dat),
+    ("SCAN-B Untreated", dat[~dat.endo]),
+    ("SCAN-B Endocrine-treated", dat[dat.endo]),
+]
+
+# rows run top to bottom: each signature, RFi then DRFi
+row_labels = []
+rows = []
+for sig_name, sig_col in SIGNATURES:
+    for ep_name, tcol, ecol, colour in ENDPOINTS:
+        row_labels.append(sig_name + " · " + ep_name)
+        rows.append((sig_col, tcol, ecol, colour))
+
+n_rows = len(rows)
+
+# HR + log-rank p for every panel/row, then BH within each panel (8 tests)
+
+results = {}
+
+for panel_name, sub in PANELS:
+    raw_p = []
+
+    for i, (sig_col, tcol, ecol, colour) in enumerate(rows):
+        s = sub.dropna(subset=[sig_col, tcol, ecol])
+        s = s[s[tcol] > 0]
+
+        high = (s[sig_col] > s[sig_col].median()).astype(int)
+        hr, lo, hi = cox_binary(high, s[tcol].values, s[ecol].values)
+        p = logrank_p(s[tcol].values, s[ecol].values, high.values)
+
+        results[(panel_name, i)] = {"hr": hr, "lo": lo, "hi": hi, "p": p, "colour": colour}
+        raw_p.append(p)
+
+    q = bh_fdr(raw_p)
+    for i in range(n_rows):
+        results[(panel_name, i)]["q"] = q[i]
+
+
+#plot
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+
+for ax, (panel_name, sub) in zip(axes, PANELS):
+    for i in range(n_rows):
+        y = n_rows - 1 - i
+        r = results[(panel_name, i)]
+
+        ax.plot([r["lo"], r["hi"]], [y, y], "-", color=r["colour"], lw=1.5)
+        ax.plot(r["hr"], y, "s", color=r["colour"], ms=5)
+
+        label = "%s %.2f (%.2f–%.2f)" % (star(r["q"]), r["hr"], r["lo"], r["hi"])
+        ax.text(0.02, y + 0.32, label, transform=ax.get_yaxis_transform(),
+                fontsize=7, color="black")
+
+    ax.axvline(1, ls="--", color="#999", lw=1)
+    ax.set_xscale("log")
+    ax.set_xlim(0.4, 6)
+    ax.set_xticks([0.5, 1, 2, 4])
+    ax.set_xticklabels(["0.5", "1", "2", "4"])
+    ax.set_title(panel_name, fontsize=10)
+    ax.set_xlabel("HR (high vs low)")
+
+axes[0].set_yticks(range(n_rows))
+axes[0].set_yticklabels(row_labels[::-1], fontsize=8.5)
+
+fig.suptitle(
+    "SCAN-B ER+ by treatment — recurrence (RFi red / DRFi purple), "
+    "median split, HR high vs low\n"
+    "CIBERSORTx B-mode; stars = log-rank P, Benjamini-Hochberg FDR "
+    "across the 8 tests per column",
+    fontweight="bold", fontsize=10, y=1.02)
+
+fig.text(0.5, -0.01,
+         "Untreated arm n=268 (RFi 26 / DRFi 13 events): very wide CI, "
+         "underpowered.  *<0.05 **<0.01 ***<0.001 ****<1e-4 (FDR)",
+         ha="center", fontsize=7, color="#555")
+
+plt.tight_layout()
+plt.savefig(OUT_PDF, bbox_inches="tight")
 print("saved")
