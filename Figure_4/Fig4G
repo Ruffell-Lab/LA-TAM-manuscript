@@ -1,6 +1,5 @@
-"""
-Figure 4G  |  SCAN-B ER+ overall survival by macrophage lipid-efflux signature.
-"""
+#Analytical scripts were developed with the assistance of generative AI (Claude, version 1.17377.2). All resulting code was reviewed and deployed under the supervision of study bioinformatician.
+#Figure 4G  |  SCAN-B ER+ overall survival by macrophage lipid-efflux signature.
 import os, csv, math
 import numpy as np, pandas as pd, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
@@ -9,7 +8,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 SCANB_CLINICAL = os.environ.get("SCANB_CLINICAL", "data/SCANB_relapse_macro_efflux.csv")
 SCANB_EXPR     = os.environ.get("SCANB_EXPR",
                  "data/GSE96058_gene_expression_3273_samples_and_136_replicates_transformed.csv")
-OUT_DIR        = os.environ.get("OUT_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache"))
+OUT_DIR        = os.environ.get("OUT_DIR", os.path.join(os.path.drname(os.path.abspath(__file__)), "_cache"))
 os.makedirs(OUT_DIR, exist_ok=True)
 
 LAM = ["ABCA1","ABCG1","NR1H3","NR1H2","APOE","APOC1","PLTP","SOAT1","NCEH1","LIPA","NPC2",
