@@ -1,1 +1,138 @@
 
+import argparse
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.colors import TwoSlopeNorm
+from scipy.stats import mannwhitneyu
+from statsmodels.stats.multitest import multipletests
+
+from abc_common import (LM22, ENDPOINTS, PRIMARY_END, WINDOW_END, CHEMO_OFFSET,
+                        TREATMENT_YEARS, load, abc_groups, stars, fmt_p)
+
+
+def main(data_dir, out_dir):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    d = load(data_dir)
+    print(f"endocrine-treated ER+ with deconvolution: n={len(d)}")
+
+    blocks, stats, rows = {}, {}, []
+    for ep, td, ee in ENDPOINTS:
+        g = abc_groups(d, td, ee)
+        blocks[ep] = g
+        res, non = g["resistant"], g["non_resistant"]
+        p = np.array([mannwhitneyu(non[c].dropna(), res[c].dropna(),
+                                   alternative="two-sided").pvalue for c in LM22])
+        q = multipletests(p, method="fdr_bh")[1]
+        stats[ep] = (p, q)
+        for i, c in enumerate(LM22):
+            rows.append([ep, c,
+                         "up in resistant" if res[c].mean() > non[c].mean() else "down",
+                         len(non), len(res), len(g["primary"]), len(g["secondary"]),
+                         non[c].mean(), res[c].mean(), p[i], q[i], stars(q[i])])
+        print(f"{ep}: resistant={len(res)} "
+              f"({len(g['primary'])} primary + {len(g['secondary'])} secondary)  "
+              f"non-resistant={len(non)}  "
+              f"neither ABC definition={len(g['not_meeting'])}  "
+              f"short follow-up={len(g['short_followup'])}")
+        for c in ("Macrophages M0", "Macrophages M2"):
+            i = LM22.index(c)
+            print(f"      {c:16s} p={p[i]:.4g}  FDR={q[i]:.4f}")
+
+    pd.DataFrame(rows, columns=[
+        "endpoint", "cell", "direction", "n_non_resistant", "n_resistant",
+        "n_primary", "n_secondary", "mean_non_resistant", "mean_resistant",
+        "p_MWU", "q_BH", "sig"]).to_csv(out_dir / "figA_stats.csv", index=False)
+
+    # sensitivity: both endpoints corrected jointly (44 tests)
+    q44 = multipletests(np.concatenate([stats[ep][0] for ep, _, _ in ENDPOINTS]),
+                        method="fdr_bh")[1].reshape(2, len(LM22))
+    print("\njoint 44-test BH check:")
+    for k, (ep, _, _) in enumerate(ENDPOINTS):
+        for c in ("Macrophages M0", "Macrophages M2"):
+            i = LM22.index(c)
+            print(f"  {ep:5s} {c:16s} FDR(22)={stats[ep][1][i]:.4f}  FDR(44)={q44[k][i]:.4f}")
+
+    # plot 
+    cols = [(ep, grp) for ep, _, _ in ENDPOINTS
+            for grp in ("Non-resistant", "ABC resistant")]
+    M = np.zeros((len(LM22), 4))
+    for j, (ep, grp) in enumerate(cols):
+        dd = blocks[ep]["non_resistant"] if grp == "Non-resistant" else blocks[ep]["resistant"]
+        M[:, j] = [dd[c].mean() for c in LM22]
+    Z = np.zeros_like(M)
+    for blk in (slice(0, 2), slice(2, 4)):          # row-scale within each endpoint
+        sub = M[:, blk]
+        Z[:, blk] = (sub - sub.mean(1, keepdims=True)) / (sub.std(1, keepdims=True) + 1e-9)
+
+    fig, ax = plt.subplots(figsize=(7.8, 9.2))
+    im = ax.imshow(Z, cmap="RdBu_r", norm=TwoSlopeNorm(vmin=-2, vcenter=0, vmax=2),
+                   aspect="auto")
+    n_col = [len(blocks[ep]["non_resistant"] if g == "Non-resistant"
+                 else blocks[ep]["resistant"]) for ep, g in cols]
+    ax.set_xticks(range(4))
+    ax.set_xticklabels([f"{g}\n(n={n:,})" for (_, g), n in zip(cols, n_col)], fontsize=8)
+    ax.set_yticks(range(len(LM22)))
+    ax.set_yticklabels(LM22, fontsize=9)
+    ax.set_xticks(np.arange(-0.5, 4, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(LM22), 1), minor=True)
+    ax.grid(which="minor", color="white", lw=1.4)
+    ax.tick_params(which="minor", length=0)
+
+    for k, (ep, _, _) in enumerate(ENDPOINTS):
+        j = 2 * k + 1
+        p, q = stats[ep]
+        for i in range(len(LM22)):
+            sig = q[i] == q[i] and q[i] < 0.05
+            colour = "black" if sig else "#666666"
+            weight = "bold" if sig else "normal"
+            ax.text(j, i - 0.16, f"p {fmt_p(p[i])}", ha="center", va="center",
+                    fontsize=5.3, color=colour, fontweight=weight)
+            ax.text(j, i + 0.20, f"FDR {fmt_p(q[i])}", ha="center", va="center",
+                    fontsize=5.3, color=colour, fontweight=weight)
+            s = stars(q[i])
+            if s:
+                ax.text(j + 0.44, i - 0.30, s, ha="right", va="center",
+                        fontsize=7, color="black")
+
+    ax.axvline(1.5, color="white", lw=3)
+    ax.text(0.5, -0.95, "RFi", ha="center", fontweight="bold", fontsize=10)
+    ax.text(2.5, -0.95, "DRFi", ha="center", fontweight="bold", fontsize=10)
+    for i, c in enumerate(LM22):
+        if c in ("Macrophages M1", "Macrophages M2"):
+            ax.add_patch(plt.Rectangle((-0.5, i - 0.5), 4, 1, fill=False,
+                                       edgecolor="#e67e22", lw=1.8))
+    cb = fig.colorbar(im, ax=ax, shrink=0.35, pad=0.02)
+    cb.set_label("Row-scaled\nimmune fraction", fontsize=8)
+    ax.set_title("Immune composition of ABC-defined endocrine-resistant tumours\n"
+                 "SCAN-B, endocrine-treated ER+  |  CIBERSORTx B-mode LM22",
+                 fontsize=10, pad=34)
+
+    r, dd = blocks["RFi"], blocks["DRFi"]
+    fig.text(0.5, 0.022,
+             f"ABC resistant = primary (relapse within the first 2 years on adjuvant ET) + secondary (relapse on ET after 2 years, or within 12 months of completing ET), pooled:\n"
+             f"RFi {len(r['primary'])} primary + {len(r['secondary'])} secondary, DRFi {len(dd['primary'])} + {len(dd['secondary'])}. Relapses meeting neither ABC definition "
+             f"(RFi n={len(r['not_meeting'])}, DRFi n={len(dd['not_meeting'])}) are excluded from both\n"
+             f"columns, not pooled into non-resistant. Non-resistant = event-free with follow-up through the full window (RFi n={len(r['short_followup'])} censored earlier and excluded).\n"
+             f"SCAN-B records regimen class only, so the start of endocrine therapy is taken as surgery, or surgery + {CHEMO_OFFSET:.0f} d for chemotherapy-containing regimens, and the\n"
+             f"course as {TREATMENT_YEARS:.0f} years -- a surrogate for the ABC clock, which is anchored on being on therapy. p = Mann-Whitney U; FDR = Benjamini-Hochberg over the 22\n"
+             "populations within each endpoint; conclusions unchanged if both endpoints are corrected jointly (44 tests). Bold = FDR < 0.05. Row-scaled within endpoint.",
+             ha="center", fontsize=6.0, color="#555")
+    fig.subplots_adjust(bottom=0.15, top=0.89)
+    fig.savefig(out_dir / "figA_abc_immune_heatmap.pdf", bbox_inches="tight")
+    fig.savefig(out_dir / "figA_abc_immune_heatmap.png", dpi=170, bbox_inches="tight")
+    print(f"\nwrote {out_dir/'figA_abc_immune_heatmap.pdf'} and figA_stats.csv")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data-dir", default="../data")
+    ap.add_argument("--out-dir", default="../output")
+    a = ap.parse_args()
+    main(a.data_dir, a.out_dir)
