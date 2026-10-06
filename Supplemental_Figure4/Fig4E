@@ -1,0 +1,187 @@
+import argparse
+import csv
+import math
+import os
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from statsmodels.stats.multitest import multipletests
+
+LATAM_GENES = [
+    "ABCA1", "ABCG1", "NR1H3", "NR1H2", "APOE", "APOC1", "PLTP", "SOAT1",
+    "NCEH1", "LIPA", "NPC2", "TREM2", "GPNMB", "SPP1", "FABP5", "LPL", "CD9",
+    "LGALS3", "PLIN2", "CD36", "MSR1", "MARCO", "OLR1",
+]
+SIGNATURE_LABEL = "LA-TAM signature (23 genes)"
+ENDPOINTS = [("RFi", "RFi_d", "RFi_e"), ("DRFi", "DRFi_d", "DRFi_e")]
+
+
+def logrank(time, event, group):
+    """Two-sample log-rank test. Returns a two-sided p value."""
+    d = pd.DataFrame({"t": time, "e": event, "g": group}).dropna()
+    O = E = V = 0.0
+    for tt in np.sort(d.loc[d.e == 1, "t"].unique()):
+        at_risk = d[d.t >= tt]
+        n = len(at_risk)
+        n1 = (at_risk.g == 1).sum()
+        events = d[(d.t == tt) & (d.e == 1)]
+        dn = len(events)
+        if n > 1:
+            E += dn * n1 / n
+            V += dn * (n1 / n) * (1 - n1 / n) * (n - dn) / (n - 1)
+            O += (events.g == 1).sum()
+    if V <= 0:
+        return 1.0
+    return math.erfc(abs((O - E) / math.sqrt(V)) / math.sqrt(2))
+
+
+def cox_binary(group, time, event, tol=1e-9, max_iter=60):
+    """
+    Cox proportional-hazards fit for a single binary covariate, by
+    Newton-Raphson on the Breslow partial likelihood. Returns
+    (hazard ratio, lower 95% CI, upper 95% CI).
+    """
+    g = np.asarray(group, float)
+    t = np.asarray(time, float)
+    e = np.asarray(event, float)
+    beta, info = 0.0, 1.0
+    for _ in range(max_iter):
+        w = np.exp(g * beta)
+        grad, info = 0.0, 0.0
+        for tt in np.unique(t[e == 1]):
+            at_risk = t >= tt
+            died = (t == tt) & (e == 1)
+            d_n = died.sum()
+            if d_n == 0:
+                continue
+            wr, gr = w[at_risk], g[at_risk]
+            sw = wr.sum()
+            g_bar = (wr * gr).sum() / sw
+            grad += g[died].sum() - d_n * g_bar
+            info += d_n * ((wr * gr * gr).sum() / sw - g_bar * g_bar)
+        if info <= 0:
+            break
+        step = grad / info
+        beta += step
+        if abs(step) < tol:
+            break
+    se = 1 / math.sqrt(info) if info > 0 else float("nan")
+    return math.exp(beta), math.exp(beta - 1.96 * se), math.exp(beta + 1.96 * se)
+
+
+def stars(q):
+    if q != q:
+        return ""
+    return ("****" if q < 1e-4 else "***" if q < 1e-3 else
+            "**" if q < 1e-2 else "*" if q < 0.05 else "")
+
+
+def load_expression(path, genes):
+    """Stream the expression CSV and keep only the signature genes."""
+    wanted = set(genes)
+    rows = {}
+    with open(path) as fh:
+        reader = csv.reader(fh)
+        samples = next(reader)[1:]
+        for r in reader:
+            if r[0] in wanted:
+                rows[r[0]] = [float(v) for v in r[1:]]
+    return pd.DataFrame(rows, index=samples)
+
+
+def main(clinical_path, expression_path, out_dir):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    d = pd.read_csv(clinical_path)
+    d = d[d.ERpos == True].copy()
+
+    expr = load_expression(expression_path, LATAM_GENES)
+    missing = [g for g in LATAM_GENES if g not in expr.columns]
+    if missing:
+        print(f"  warning: signature gene(s) absent and skipped: {', '.join(missing)}")
+    present = [g for g in LATAM_GENES if g in expr.columns]
+    z = (expr[present] - expr[present].mean()) / expr[present].std(ddof=0)
+    d = d.merge(pd.DataFrame({"F": expr.index, "LATAM": z.mean(axis=1).values}),
+                on="F", how="left")
+
+    groups = [("All ER+", d), ("Untreated", d[~d.endo]), ("Endocrine treated", d[d.endo])]
+    rows = []
+    for ep, td, ee in ENDPOINTS:
+        for name, sub in groups:
+            s = sub.dropna(subset=["LATAM", td, ee])
+            s = s[s[td] > 0]
+            high = (s.LATAM > s.LATAM.median()).astype(int)
+            hr, lo, up = cox_binary(high, s[td].values, s[ee].values)
+            p = logrank(s[td].values, s[ee].values, high.values)
+            rows.append(dict(endpoint=ep, group=name, label=f"{ep} — {name}",
+                             hr=hr, lo=lo, up=up, p=p,
+                             events=int(s[ee].sum()), n=len(s)))
+    R = pd.DataFrame(rows)
+
+    # BH across the six comparisons shown; within-endpoint families also reported
+    R["q_all6"] = multipletests(R.p.values, method="fdr_bh")[1]
+    R["q_within_endpoint"] = np.nan
+    for ep in R.endpoint.unique():
+        m = R.endpoint == ep
+        R.loc[m, "q_within_endpoint"] = multipletests(R.loc[m, "p"].values,
+                                                      method="fdr_bh")[1]
+    R["sig"] = R.q_all6.map(stars)
+    R["CI_excludes_1"] = (R.lo > 1) | (R.up < 1)
+    R.to_csv(out_dir / "figS3_LATAM_stats.csv", index=False)
+    print(R[["label", "hr", "lo", "up", "p", "q_all6", "sig", "events", "n"]]
+          .to_string(index=False))
+
+    # ---------------- plot ----------------
+    fig, ax = plt.subplots(figsize=(9.6, 4.4))
+    y = np.arange(len(R))[::-1]
+    for yy, r in zip(y, R.itertuples()):
+        colour = "#c0392b" if (r.q_all6 < 0.05 and r.hr > 1) else "#888888"
+        ax.plot([r.lo, r.up], [yy, yy], "-", color=colour, lw=1.7)
+        ax.plot(r.hr, yy, "s", color=colour, ms=7)
+        ax.text(4.75, yy,
+                f"HR={r.hr:.2f} ({r.lo:.2f}–{r.up:.2f})   "
+                f"P={r.p:.1e}, q={r.q_all6:.1e}  {r.sig}   [ev {r.events}/{r.n}]",
+                va="center", fontsize=7.6)
+    ax.axvline(1, ls="--", color="#999", lw=1)
+    ax.set_yticks(y)
+    ax.set_yticklabels(R.label.tolist(), fontsize=9)
+    ax.set_xscale("log")
+    ax.set_xlim(0.4, 4.6)
+    ax.set_xticks([0.5, 1, 2, 4])
+    ax.set_xticklabels(["0.5", "1", "2", "4"])
+    ax.set_xlabel("Hazard ratio (efflux-high vs low, median split) — right = worse",
+                  fontsize=9)
+    ax.set_title(f"SCAN-B ER+: {SIGNATURE_LABEL} vs recurrence\n"
+                 "RFi and DRFi by treatment group; stars = log-rank P after BH-FDR "
+                 "across all 6 tests",
+                 fontsize=10, fontweight="bold")
+    untreated = R[R.group == "Untreated"]
+    fig.text(0.02, -0.05,
+             "*q<0.05  **q<0.01  ***q<0.001  ****q<1e-4 (BH-FDR, family = the 6 tests shown; "
+             "'All ER+' overlaps the two treatment rows, so the tests are positively dependent).\n"
+             f"Untreated arm n≈{untreated.n.iloc[0]} "
+             f"({untreated.events.iloc[0]} RFi / {untreated.events.iloc[1]} DRFi events): "
+             "the confidence interval is wide and crosses 1 for both endpoints — underpowered, "
+             "interpret cautiously.",
+             ha="left", fontsize=6.8, color="#555")
+    fig.tight_layout()
+    fig.savefig(out_dir / "figS3_LATAM_forest.pdf", bbox_inches="tight")
+    fig.savefig(out_dir / "figS3_LATAM_forest.png", dpi=170, bbox_inches="tight")
+    print(f"\nwrote {out_dir/'figS3_LATAM_forest.pdf'} and figS3_LATAM_stats.csv")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--clinical",
+                    default=os.environ.get("SCANB_CLINICAL", "../data/SCANB_clinical.csv"))
+    ap.add_argument("--expression",
+                    default=os.environ.get("SCANB_EXPR", "../data/GSE96058_expression.csv"))
+    ap.add_argument("--out-dir", default=os.environ.get("OUT_DIR", "../output"))
+    a = ap.parse_args()
+    main(a.clinical, a.expression, a.out_dir)
