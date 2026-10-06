@@ -1,0 +1,187 @@
+
+import argparse
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+from scipy.stats import spearmanr
+from statsmodels.stats.multitest import multipletests
+
+from abc_common import (MACROPHAGES, ENDPOINTS, PRIMARY_END, WINDOW_END,
+                        CHEMO_OFFSET, TREATMENT_YEARS, load, abc_groups)
+
+LABEL = {"Macrophages Total": "Total", "Macrophages M0": "M0",
+         "Macrophages M1": "M1", "Macrophages M2": "M2"}
+CATEGORIES = ["pooled resistant", "primary", "secondary"]
+COLOUR = {"pooled resistant": "#2b3440", "primary": "#b3541e", "secondary": "#1a5490"}
+MARKER = {"pooled resistant": "D", "primary": "o", "secondary": "s"}
+BINS = [0, 365, 730, 1095, 1460, 1825, 2190]
+XLO, XHI = 0.72, 3.2
+
+
+def or_per_sd(resistant, non_resistant, column, mean, sd):
+    """Odds ratio per SD of the phenotype, resistant versus non-resistant."""
+    sub = pd.concat([resistant.assign(_y=1), non_resistant.assign(_y=0)],
+                    ignore_index=True)
+    X = sm.add_constant(pd.DataFrame({"x": (sub[column] - mean) / sd}))
+    m = sm.Logit(sub._y, X).fit(disp=0)
+    lo, hi = np.exp(m.conf_int().loc["x"])
+    return np.exp(m.params["x"]), lo, hi, m.pvalues["x"]
+
+
+def main(data_dir, out_dir):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    d = load(data_dir)
+
+    rows, bin_rows = [], []
+    for ep, td, ee in ENDPOINTS:
+        g = abc_groups(d, td, ee)
+        non = g["non_resistant"]
+        # standardise across the whole analysis cohort, not within groups
+        s = d.dropna(subset=[td, ee])
+        s = s[s[td] > 0]
+        mean = {c: s[c].mean() for c in MACROPHAGES}
+        sd = {c: s[c].std(ddof=0) for c in MACROPHAGES}
+
+        print(f"\n{'=' * 70}\n{ep}: pooled={len(g['resistant'])}  "
+              f"primary={len(g['primary'])}  secondary={len(g['secondary'])}  "
+              f"non-resistant={len(non)}")
+
+        for cat, key in zip(CATEGORIES, ["resistant", "primary", "secondary"]):
+            p_list, tmp = [], []
+            for c in MACROPHAGES:
+                o, lo, hi, p = or_per_sd(g[key], non, c, mean[c], sd[c])
+                p_list.append(p)
+                tmp.append((c, o, lo, hi, p, len(g[key])))
+            q = multipletests(p_list, method="fdr_bh")[1]
+            for (c, o, lo, hi, p, n), qq in zip(tmp, q):
+                rows.append(dict(endpoint=ep, category=cat, phenotype=c, n_resistant=n,
+                                 n_non_resistant=len(non), OR=o, lo=lo, hi=hi, p=p, q=qq))
+            print("   " + cat + ": " + "  ".join(
+                f"{LABEL[c]} {o:.2f}{'*' if qq < 0.05 else ''}"
+                for (c, o, _, _, _, _), qq in zip(tmp, q)))
+
+        # relapses binned by time -- the evidence that the split is not a gradient
+        rel = g["resistant"].copy()
+        rel["bin"] = pd.cut(rel._t, BINS)
+        for c in MACROPHAGES:
+            rho, p_rho = spearmanr(rel._t, rel[c])
+            for b, sub_g in rel.groupby("bin", observed=True):
+                bin_rows.append(dict(endpoint=ep, phenotype=c, bin=str(b), n=len(sub_g),
+                                     median=sub_g[c].median(),
+                                     non_resistant_median=non[c].median(),
+                                     ratio=sub_g[c].median() / non[c].median(),
+                                     spearman_rho=rho, spearman_p=p_rho))
+        m0 = [r for r in bin_rows if r["endpoint"] == ep
+              and r["phenotype"] == "Macrophages M0"]
+        print("   M0 median / non-resistant median by time bin: " +
+              "  ".join(f"{r['ratio']:.2f}x(n={r['n']})" for r in m0))
+
+    R = pd.DataFrame(rows)
+    R.to_csv(out_dir / "figB_stats.csv", index=False)
+    pd.DataFrame(bin_rows).to_csv(out_dir / "figB_relapse_time_bins.csv", index=False)
+
+    # plot 
+    fig, ax = plt.subplots(figsize=(7.8, 6.8))
+    fig.subplots_adjust(left=0.19, right=0.97, top=0.90, bottom=0.21)
+
+    ticks, labels, y, spans = [], [], 0.0, []
+    for ep, _, _ in ENDPOINTS:
+        y_top = y + 0.46
+        for c in MACROPHAGES:
+            for cat in CATEGORIES:
+                r = R[(R.endpoint == ep) & (R.phenotype == c) & (R.category == cat)].iloc[0]
+                colour = COLOUR[cat]
+                lo, hi = max(r.lo, XLO * 1.01), min(r.hi, XHI * 0.99)
+                ax.plot([lo, hi], [y] * 2, color=colour,
+                        lw=1.9 if cat == CATEGORIES[0] else 1.4,
+                        solid_capstyle="round", zorder=3)
+                if r.hi > XHI * 0.99:
+                    ax.plot(hi, y, ">", ms=4.2, color=colour, zorder=3)
+                ax.plot(min(max(r.OR, XLO * 1.02), XHI * 0.99), y, MARKER[cat],
+                        ms=6.4 if cat == CATEGORIES[0] else 5.4,
+                        mfc=colour if r.q < 0.05 else "white",
+                        mec=colour, mew=1.4, zorder=4)
+                if r.q < 0.05:
+                    ax.text(hi * 1.03, y, "*", fontsize=11, va="center",
+                            color=colour, zorder=4)
+                y -= 0.50
+            ticks.append(y + 1.00)
+            labels.append(LABEL[c])
+            y -= 0.40
+        spans.append((ep, y_top, y + 0.10))
+        y -= 0.72
+
+    for k, (ep, top, bot) in enumerate(spans):
+        if k == 1:
+            ax.axhspan(bot, top, color="#f2f4f6", lw=0, zorder=0)
+        ax.annotate("", xy=(-0.145, top), xytext=(-0.145, bot),
+                    xycoords=("axes fraction", "data"),
+                    textcoords=("axes fraction", "data"),
+                    arrowprops=dict(arrowstyle="-", lw=2.4, color="#1d2530"))
+        ax.text(-0.185, (top + bot) / 2, ep, transform=ax.get_yaxis_transform(),
+                fontsize=11.5, fontweight="bold", rotation=90,
+                va="center", ha="center", color="#1d2530")
+
+    ax.axvline(1, color="#b9c0c8", lw=1.0, ls=(0, (4, 3)), zorder=1)
+    ax.set_xscale("log")
+    ax.set_xlim(XLO, XHI)
+    ax.set_xticks([0.8, 1, 1.5, 2, 3])
+    ax.set_xticklabels(["0.8", "1", "1.5", "2", "3"], fontsize=8.8)
+    ax.minorticks_off()
+    ax.set_yticks(ticks)
+    ax.set_yticklabels(labels, fontsize=9.6)
+    ax.set_xlabel("odds ratio for endocrine resistance per SD of macrophage fraction (95% CI)",
+                  fontsize=9, color="#333", labelpad=7)
+    ax.tick_params(length=2.5, pad=2, labelsize=8.8)
+    for sp in ("top", "right", "left"):
+        ax.spines[sp].set_visible(False)
+    ax.spines["bottom"].set_color("#b9c0c8")
+
+    n = {ep: {k: len(abc_groups(d, td, ee)[k])
+              for k in ("resistant", "primary", "secondary")}
+         for ep, td, ee in ENDPOINTS}
+    handles = [plt.Line2D([], [], ls="-", marker=MARKER[c], ms=5.8, color=COLOUR[c],
+                          label=lab)
+               for c, lab in zip(CATEGORIES, [
+                   f"pooled resistant (n = {n['RFi']['resistant']} RFi / {n['DRFi']['resistant']} DRFi)",
+                   f"primary (n = {n['RFi']['primary']} / {n['DRFi']['primary']})",
+                   f"secondary (n = {n['RFi']['secondary']} / {n['DRFi']['secondary']})"])]
+    ax.legend(handles=handles, fontsize=8.2, frameon=False, loc="upper left",
+              bbox_to_anchor=(-0.02, -0.105), ncol=1)
+
+    fig.text(0.02, 1.015,
+             "The macrophage association is present in both ABC categories; the two are pooled\n"
+             "because the subgroups cannot be ranked",
+             fontsize=11.6, fontweight="bold", ha="left", va="bottom")
+    fig.text(0.02, 0.955,
+             "SCAN-B, ER+ endocrine-treated. Each resistant group is compared with the same non-resistant group.\n"
+             "Filled markers and asterisks mark FDR < 0.05 across the four macrophage measures within each\n"
+             "category and endpoint.",
+             fontsize=8.0, color="#333", ha="left", va="bottom")
+    fig.text(0.02, -0.055,
+             "Odds ratios are per standard deviation of the macrophage fraction, standardised across the whole analysis cohort so that the three groups are on a common scale; arrowheads mark\n"
+             "intervals running off the axis. Splitting at 730 days gives the primary group a larger odds ratio than the secondary group, but we do not report that as a finding: binning the same\n"
+             "relapses by time shows the difference is not a gradient and does not come from the earliest relapses, and within relapses, time to relapse does not correlate with macrophage\n"
+             "content. A boundary at one year rather than two would leave the primary group with no effect. Per-bin values are in figB_relapse_time_bins.csv. We therefore treat the pooled\n"
+             f"resistant group as the primary analysis. The {PRIMARY_END:.0f}-day boundary is set by the ABC guideline; what we assume is the start of the clock, since SCAN-B records regimen class only,\n"
+             f"without treatment dates or duration (start = surgery, or surgery + {CHEMO_OFFSET:.0f} d after chemotherapy; course = {TREATMENT_YEARS:.0f} years).",
+             fontsize=6.8, color="#666", ha="left", va="top")
+    fig.savefig(out_dir / "figB_primary_vs_secondary_forest.pdf", bbox_inches="tight")
+    fig.savefig(out_dir / "figB_primary_vs_secondary_forest.png", dpi=170, bbox_inches="tight")
+    print(f"\nwrote {out_dir/'figB_primary_vs_secondary_forest.pdf'}, "
+          "figB_stats.csv and figB_relapse_time_bins.csv")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data-dir", default="../data")
+    ap.add_argument("--out-dir", default="../output")
+    a = ap.parse_args()
+    main(a.data_dir, a.out_dir)
